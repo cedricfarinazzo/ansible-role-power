@@ -9,7 +9,7 @@
         cache_valid_time: 3600
 
 - name: Simulated UPS
-  hosts: server
+  hosts: servers
   gather_facts: false
   tasks:
     - name: Directory for the simulated UPS

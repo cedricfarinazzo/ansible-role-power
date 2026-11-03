@@ -5,8 +5,10 @@ driver:
   name: docker
 platforms:
   # server: two simulated UPS (dummy-ups); client: follows them over the network
-  - name: server
+  # Names and network carry the distribution, so several distributions run side by side
+  - name: server-${MOLECULE_DISTRO:-debian13}
     hostname: server
+    groups: [servers]
     image: "geerlingguy/docker-${MOLECULE_DISTRO:-debian13}-ansible:latest"
     command: ${MOLECULE_DOCKER_COMMAND:-""}
     volumes:
@@ -15,11 +17,12 @@ platforms:
     privileged: true
     pre_build_image: true
     docker_networks:
-      - name: power-molecule
+      - name: power-molecule-${MOLECULE_DISTRO:-debian13}
     networks:
-      - name: power-molecule
-  - name: client
+      - name: power-molecule-${MOLECULE_DISTRO:-debian13}
+  - name: client-${MOLECULE_DISTRO:-debian13}
     hostname: client
+    groups: [clients]
     image: "geerlingguy/docker-${MOLECULE_DISTRO:-debian13}-ansible:latest"
     command: ${MOLECULE_DOCKER_COMMAND:-""}
     volumes:
@@ -28,7 +31,7 @@ platforms:
     privileged: true
     pre_build_image: true
     networks:
-      - name: power-molecule
+      - name: power-molecule-${MOLECULE_DISTRO:-debian13}
 provisioner:
   name: ansible
   playbooks:
@@ -45,7 +48,7 @@ provisioner:
         # Fast polling, so the simulated cuts are seen within seconds
         power_upsmon_settings: {POLLFREQ: 2, POLLFREQALERT: 2, DEADTIME: 15, HOSTSYNC: 5, FINALDELAY: 0}
     host_vars:
-      server:
+      server-${MOLECULE_DISTRO:-debian13}:
         power_ups:
           - {name: main, driver: dummy-ups, port: main.dev, desc: Feeds both hosts}
           # No sdorder: the role adds sdorder -1 to a watched-only UPS
@@ -63,11 +66,18 @@ provisioner:
         power_wake_ups: main
         power_wake_min_charge: 50
         power_wake_delay_sec: 1
-      client:
+      client-${MOLECULE_DISTRO:-debian13}:
         power_mode: netclient
         power_remote_ups:
-          - {name: main, host: server, user: client, password_from: server}
-          - {name: other, host: server, user: supplied, password: molecule-pass, feeds: false}
+          - name: main
+            host: server-${MOLECULE_DISTRO:-debian13}
+            user: client
+            password_from: server-${MOLECULE_DISTRO:-debian13}
+          - name: other
+            host: server-${MOLECULE_DISTRO:-debian13}
+            user: supplied
+            password: molecule-pass
+            feeds: false
         power_shutdown_on: timer
         power_shutdown_after_sec: 15
         power_killpower: false

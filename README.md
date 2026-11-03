@@ -230,7 +230,7 @@ Molecule starts two Docker containers: a server with two simulated UPS and a cli
 # One distribution
 ./run-tests.sh debian13
 
-# Every supported distribution
+# Every supported distribution, in parallel (logs in .molecule-logs/)
 make molecule-test-all
 
 # Lint, script and input tests

@@ -25,3 +25,6 @@ Thumbs.db
 
 # semantic-release tooling
 node_modules/
+
+# Logs of parallel Molecule runs (run-tests.sh)
+.molecule-logs/

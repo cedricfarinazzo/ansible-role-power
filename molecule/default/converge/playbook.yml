@@ -1,11 +1,11 @@
 ---
 # The server first: the client reads its password there
 - name: Converge the server
-  hosts: server
+  hosts: servers
   roles:
     - role: ../../../../ansible-role-power
 
 - name: Converge the client
-  hosts: client
+  hosts: clients
   roles:
     - role: ../../../../ansible-role-power

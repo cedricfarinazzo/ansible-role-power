@@ -17,7 +17,7 @@ Public Ansible role `cedricfarinazzo.power` (Ansible Galaxy): the power cycle of
 - `meta/main.yml` — Galaxy metadata; `platforms` lists exactly what CI tests.
 - `molecule/default/` — the one Molecule scenario (docker driver, `geerlingguy/docker-<distro>-ansible` images, one network): `server` with two `dummy-ups` UPS, `client` in `netclient` timer mode. `prepare/` writes the `.dev` files; `converge/` runs the server first (the client reads its password there); `verify/` (one play on the server, client steps delegated) checks both configs, secrets, the added `sdorder`, the wake, a short cut (timer cancelled), a long cut (client stops, server notifies and stays up), `upsmon -c fsd` on the server with mains on (FSD alone stops the client), a low battery (server stops), then restores mains and restarts NUT; the sequence runs `check` on fresh containers before `converge`; `collections.yml` holds test-only collections.
 - `tests/scripts.test.sh` — the scripts with every external command stubbed on `PATH`; `tests/validate.test.sh` — good and bad inputs against `tasks/validate.yml` on localhost.
-- `run-tests.sh` / `Makefile` — local Molecule entry points; `run-tests.sh <distro>`.
+- `run-tests.sh` / `Makefile` — local Molecule entry points: `run-tests.sh <distro>`; several distros or `all` run in parallel, one log each in `.molecule-logs/` (git-ignored). Container names, network and Molecule state (`MOLECULE_EPHEMERAL_DIRECTORY`) carry the distro, so runs never collide; the playbooks address the containers by group (`servers`, `clients`).
 - `requirements.yml` — collections the role needs at runtime (consumer-facing ranges).
 - `requirements-dev.txt` — controller tooling, exact pins.
 - `package.json`, `bun.lock`, `.releaserc.json` — semantic-release tooling only.
@@ -62,7 +62,7 @@ Public Ansible role `cedricfarinazzo.power` (Ansible Galaxy): the power cycle of
 - Lint: `source .venv/bin/activate && yamllint . && ansible-lint && shellcheck files/* tests/*.sh`
 - Script and input tests: `tests/scripts.test.sh`, `tests/validate.test.sh`
 - Molecule on one distro: `./run-tests.sh debian13` (creates `.venv` from `requirements-dev.txt`)
-- All distros: `make molecule-test-all`
+- All distros, in parallel: `make molecule-test-all` or `./run-tests.sh all`
 - Install release tooling: `bun install --frozen-lockfile`
 
 ## Gotchas
@@ -78,6 +78,7 @@ Public Ansible role `cedricfarinazzo.power` (Ansible Galaxy): the power cycle of
 - `dummy-ups` reads `/etc/nut/<port>` and rereads it when it changes: the Molecule verify edits it to simulate a cut, then restores it.
 - `upsmon -c fsd` fails from upssched's `CMDSCRIPT`: the script runs as the nut user and the PID file belongs to the root upsmon process (written before it drops privileges, `clients/upsmon.c`). Timer mode installs `sudo` and a sudoers rule for that one command.
 - upsmon exits after `SHUTDOWNCMD`, and upsd keeps FSD until the driver restarts: after a simulated cut, restart `nut-driver.target`, `nut-server` and `nut-monitor`.
+- `${MOLECULE_DISTRO}` inside a `{...}` flow mapping in `molecule.yml` breaks yamllint (it reads the file before Molecule substitutes): write those entries in block style.
 - Molecule expands `$VAR` inside `molecule.yml` (empty if unset): a shell variable meant for the role is written `$$VAR` there.
 - `wakeonlan` fails with 'send : Invalid argument' and `$proto` uninitialized when `/etc/protocols` is missing (minimal images, e.g. the Debian 12 container): the role installs `netbase` with it.
 - Molecule's docker connection: `wakeonlan` broadcasts from the container harmlessly; `power_poweroff_cmd: touch /tmp/powered-off` (`molecule.yml`) so a shutdown never stops a container.

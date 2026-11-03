@@ -8,7 +8,7 @@ help:
 	@echo "Available targets:"
 	@echo "  molecule-test              - Run molecule tests with default distro ($(DEFAULT_DISTRO))"
 	@echo "  test                       - Alias for molecule-test"
-	@echo "  molecule-test-all          - Run molecule tests against all supported distributions"
+	@echo "  molecule-test-all          - Run molecule tests against all supported distributions, in parallel"
 	@echo "  molecule-test-<distro>     - Run molecule tests against specific distribution"
 	@echo "  lint                       - Run ansible-lint"
 	@echo "  help                       - Show this help message"
@@ -32,23 +32,8 @@ molecule-test: check-prereqs
 test: molecule-test
 
 molecule-test-all: check-prereqs
-	@echo "Running molecule tests against all supported distributions..."
-	@failed_distros=""; \
-	for distro in $(SUPPORTED_DISTROS); do \
-		echo ""; \
-		echo "=== Testing with $$distro ==="; \
-		if ! ./run-tests.sh $$distro; then \
-			failed_distros="$$failed_distros $$distro"; \
-		fi; \
-	done; \
-	if [ -n "$$failed_distros" ]; then \
-		echo ""; \
-		echo "❌ Tests failed for distributions:$$failed_distros"; \
-		exit 1; \
-	else \
-		echo ""; \
-		echo "✅ All distribution tests completed successfully!"; \
-	fi
+	@echo "Running molecule tests against all supported distributions, in parallel..."
+	./run-tests.sh $(SUPPORTED_DISTROS)
 
 # Individual distribution targets
 molecule-test-%: check-prereqs
