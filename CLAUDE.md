@@ -80,6 +80,7 @@ Public Ansible role `cedricfarinazzo.power` (Ansible Galaxy): the power cycle of
 - `exec 9> file 2>/dev/null` redirects stderr for the rest of the script, not for the exec: wrap it, `{ exec 9> file; } 2>/dev/null`.
 - A lock file root creates is root's 0644: another user then cannot open it. Every power-wake run is root (boot unit, per-UPS units), so they share their locks.
 - A netclient in timer mode, or a netserver in timer mode, ends with `upsmon -c fsd`: FSD on every UPS it is primary of. A netclient there must be secondary (validated); a netserver's timer stops all its clients.
+- NUT versions log differently: 2.8.0 logs upssched's `New timer` / `Cancelling timer` but not upsmon's `on battery`; 2.8.1 the reverse. A test reading the journal accepts either.
 - `dummy-ups` reads `/etc/nut/<port>` and rereads it when it changes: the Molecule verify edits it to simulate a cut, then restores it.
 - `upsmon -c fsd` fails from upssched's `CMDSCRIPT`: the script runs as the nut user and the PID file belongs to the root upsmon process (written before it drops privileges, `clients/upsmon.c`). Timer mode installs `sudo` and a sudoers rule for that one command.
 - upsmon exits after `SHUTDOWNCMD`, and upsd keeps FSD until the driver restarts: after a simulated cut, restart `nut-driver.target`, `nut-server` and `nut-monitor`.

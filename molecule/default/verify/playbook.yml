@@ -184,7 +184,8 @@
         dest: /etc/nut/main.dev
         mode: "0644"
 
-    # The client's own upssched, not upsd's data: the timer is really running
+    # The client's own view, not upsd's data. NUT 2.8.0 logs upssched's "New timer", 2.8.1+ only upsmon's
+    # "on battery" (whose ONBATT notify starts the timer): either proves the timer started
     - name: The client started its timer
       ansible.builtin.command: >-
         journalctl --no-pager -q --after-cursor
@@ -192,7 +193,9 @@
       register: power_verify_short
       delegate_to: "{{ power_client }}"
       changed_when: false
-      until: "'New timer: onbatt-main' in power_verify_short.stdout"
+      until: >-
+        'New timer: onbatt-main' in power_verify_short.stdout
+        or ('main@' ~ power_server ~ ':3493 on battery') in power_verify_short.stdout
       retries: 15
       delay: 1
 
@@ -226,7 +229,9 @@
       ansible.builtin.assert:
         that:
           - not power_verify_cancel.stat.exists
-          - "'Cancelling timer: onbatt-main' in power_verify_cancel_log.stdout"
+          - >-
+            'Cancelling timer: onbatt-main' in power_verify_cancel_log.stdout
+            or ('main@' ~ power_server ~ ':3493 on line power') in power_verify_cancel_log.stdout
 
     - name: A long cut
       ansible.builtin.copy:
