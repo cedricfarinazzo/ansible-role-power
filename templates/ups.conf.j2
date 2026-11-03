@@ -1,0 +1,25 @@
+# {{ ansible_managed }}
+{% for k, v in power_ups_globals.items() %}
+{{ k }} = "{{ v }}"
+{% endfor %}
+{% for u in power_ups %}
+
+[{{ u.name }}]
+  driver = {{ u.driver }}
+  port = {{ u.port | default('auto') }}
+{% if u.desc is defined %}
+  desc = "{{ u.desc }}"
+{% endif %}
+{% set opts = u.options | default({}) %}
+{% for k, v in opts.items() %}
+{% if v is sameas true %}
+  {{ k }}
+{% elif v is not sameas false %}
+  {{ k }} = "{{ v }}"
+{% endif %}
+{% endfor %}
+{% if power_powerdown and u.name not in power_feeding_ups and 'sdorder' not in opts %}
+  # Watched only: never powered off by this host's shutdown
+  sdorder = "-1"
+{% endif %}
+{% endfor %}

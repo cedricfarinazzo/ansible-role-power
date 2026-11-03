@@ -1,0 +1,212 @@
+---
+# NUT watches the UPS: netserver runs the drivers, upsd and upsmon; netclient runs upsmon against other hosts.
+- name: Install NUT
+  ansible.builtin.apt:
+    name: "{{ ['nut-server', 'nut-client'] if power_mode == 'netserver' else ['nut-client'] }}"
+    state: present
+
+- name: Directory for the NUT passwords
+  ansible.builtin.file:
+    path: "{{ power_secret_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  when: power_mode == 'netserver'
+
+# Generated on the host, never in a repository; upsmon-local is upsmon's own login to upsd.
+- name: Generate a password per NUT user
+  ansible.builtin.shell: >-
+    umask 077 && python3 -c 'import secrets; print(secrets.token_hex(24))' > {{ power_secret_dir }}/{{ power_user }}
+  args:
+    creates: "{{ power_secret_dir }}/{{ power_user }}"
+  loop: "{{ ['upsmon-local'] + power_clients | rejectattr('password', 'defined') | map(attribute='name') | list }}"
+  loop_control:
+    loop_var: power_user
+  when: power_mode == 'netserver'
+
+- name: Store the supplied client passwords
+  ansible.builtin.copy:
+    content: "{{ power_client.password }}\n"
+    dest: "{{ power_secret_dir }}/{{ power_client.name }}"
+    owner: root
+    group: root
+    mode: "0600"
+  loop: "{{ power_clients | selectattr('password', 'defined') | list }}"
+  loop_control:
+    loop_var: power_client
+    label: "{{ power_client.name }}"
+  when: power_mode == 'netserver'
+  no_log: true
+
+# Check mode on a first run has no file yet: the templates below then show the change without a value.
+- name: Read the server passwords
+  ansible.builtin.slurp:
+    src: "{{ power_secret_dir }}/{{ power_user }}"
+  loop: "{{ ['upsmon-local'] + power_clients | map(attribute='name') | list }}"
+  loop_control:
+    loop_var: power_user
+  register: power_nut_secrets
+  when: power_mode == 'netserver'
+  no_log: true
+  ignore_errors: "{{ ansible_check_mode }}"
+
+# The server keeps the client's password: read it there, never through the inventory.
+- name: Read the client passwords on their servers
+  ansible.builtin.slurp:
+    src: >-
+      {{ hostvars[power_remote.password_from].power_secret_dir | default(power_secret_dir) }}/{{ power_remote.user }}
+  delegate_to: "{{ power_remote.password_from }}"
+  loop: "{{ power_remote_ups | selectattr('password_from', 'defined') | list }}"
+  loop_control:
+    loop_var: power_remote
+    label: "{{ power_remote.name }}@{{ power_remote.host }}"
+  register: power_remote_secrets
+  when: power_mode == 'netclient'
+  no_log: true
+  ignore_errors: "{{ ansible_check_mode }}"
+
+- name: Configure NUT
+  ansible.builtin.template:
+    src: "{{ power_file.name }}.j2"
+    dest: /etc/nut/{{ power_file.name }}
+    owner: root
+    group: nut
+    mode: "0640"
+  loop: "{{ power_nut_files | selectattr('mode', 'search', power_mode) | list }}"
+  loop_control:
+    loop_var: power_file
+    label: "{{ power_file.name }}"
+  vars:
+    power_nut_files:
+      - {name: nut.conf, handler: Restart upsmon, mode: netserver netclient}
+      - {name: ups.conf, handler: Restart NUT drivers, mode: netserver}
+      - {name: upsd.conf, handler: Restart upsd, mode: netserver}
+      - {name: upsd.users, handler: Restart upsd, mode: netserver}
+      - {name: upsmon.conf, handler: Restart upsmon, mode: netserver netclient}
+      - {name: upssched.conf, handler: Restart upsmon, mode: netserver netclient}
+      - {name: power-notify.conf, handler: Restart upsmon, mode: netserver netclient}
+    power_server_password: >-
+      {{ dict((power_nut_secrets.results | default([])) | selectattr('content', 'defined')
+      | map(attribute='power_user') | zip((power_nut_secrets.results | default([])) | selectattr('content', 'defined')
+      | map(attribute='content') | map('b64decode') | map('trim'))) }}
+    power_remote_password: >-
+      {{ dict(power_remote_ups | selectattr('password', 'defined') | map(attribute='name')
+      | zip(power_remote_ups | selectattr('password', 'defined') | map(attribute='password')))
+      | combine(dict((power_remote_secrets.results | default([])) | selectattr('content', 'defined')
+      | map(attribute='power_remote.name') | zip((power_remote_secrets.results | default([]))
+      | selectattr('content', 'defined') | map(attribute='content') | map('b64decode') | map('trim')))) }}
+  notify: "{{ power_file.handler }}"
+  no_log: true
+
+# Read by power-wake, at boot as root and on a UPS back on mains as the nut user (power-notify)
+- name: Hosts to wake
+  ansible.builtin.template:
+    src: wake.conf.j2
+    dest: /etc/nut/power-wake.conf
+    owner: root
+    group: nut
+    mode: "0640"
+  # Check mode on a first run: no nut group yet
+  ignore_errors: "{{ ansible_check_mode }}"
+
+# power-notify (nut) drops a request there; power-wake-request.path (root) picks it up
+- name: Directory for the wake requests, at every boot
+  ansible.builtin.copy:
+    content: "d /run/nut/power-wake-requests 0770 root nut -\n"
+    dest: /etc/tmpfiles.d/power-wake.conf
+    owner: root
+    group: root
+    mode: "0644"
+  register: power_tmpfiles
+
+- name: Directory for the wake requests, now
+  ansible.builtin.command: systemd-tmpfiles --create /etc/tmpfiles.d/power-wake.conf
+  when: power_tmpfiles is changed and not ansible_check_mode
+  changed_when: true
+
+- name: Wake requests watched
+  ansible.builtin.systemd_service:
+    name: power-wake-request.path
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: not ansible_check_mode
+
+# upssched (timer mode) runs as the nut user; upsmon -c fsd must signal the root upsmon process.
+- name: Let upssched force the shutdown
+  ansible.builtin.copy:
+    content: "nut ALL=(root) NOPASSWD: /usr/sbin/upsmon -c fsd\n"
+    dest: /etc/sudoers.d/power-upssched
+    owner: root
+    group: root
+    mode: "0440"
+    validate: /usr/sbin/visudo -cf %s
+  when: power_shutdown_on == 'timer'
+
+- name: No upssched rule outside timer mode
+  ansible.builtin.file:
+    path: /etc/sudoers.d/power-upssched
+    state: absent
+  when: power_shutdown_on != 'timer'
+
+# upsd binds each LISTEN address at start: after a reboot it must wait for the network's addresses.
+- name: Directory for the upsd drop-in
+  ansible.builtin.file:
+    path: /etc/systemd/system/nut-server.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: power_mode == 'netserver'
+
+- name: Start upsd once the network is online
+  ansible.builtin.copy:
+    content: |
+      [Unit]
+      Wants=network-online.target
+      After=network-online.target
+    dest: /etc/systemd/system/nut-server.service.d/50-network-online.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+  when: power_mode == 'netserver'
+
+- name: Install nut-check (UPS status for a monitoring check)
+  ansible.builtin.copy:
+    src: nut-check
+    dest: /usr/local/bin/nut-check
+    owner: root
+    group: root
+    mode: "0755"
+
+# A host moved from netserver to netclient: its old drivers and upsd must not keep serving
+- name: Read the installed units
+  ansible.builtin.service_facts:
+  when: power_mode == 'netclient'
+
+- name: No upsd or drivers on a netclient
+  ansible.builtin.systemd_service:
+    name: "{{ power_service }}"
+    enabled: false
+    state: stopped
+  loop: [nut-server.service, nut-driver.target]
+  loop_control:
+    loop_var: power_service
+  when:
+    - power_mode == 'netclient'
+    # service_facts also lists units another unit merely references, as not-found
+    - ansible_facts.services['nut-server.service'].status | default('not-found') != 'not-found'
+    - not ansible_check_mode
+
+- name: NUT services enabled and running
+  ansible.builtin.systemd_service:
+    name: "{{ power_service }}"
+    enabled: true
+    state: started
+  loop: "{{ ['nut-driver.target', 'nut-server.service', 'nut-monitor.service'] if power_mode == 'netserver'
+    else ['nut-monitor.service'] }}"
+  loop_control:
+    loop_var: power_service
+  when: not ansible_check_mode

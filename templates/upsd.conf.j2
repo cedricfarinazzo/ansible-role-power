@@ -1,0 +1,7 @@
+# {{ ansible_managed }}
+{% for a in power_listen %}
+LISTEN {{ a }} 3493
+{% endfor %}
+{% for k, v in power_upsd_settings.items() %}
+{{ k }} {{ v }}
+{% endfor %}

@@ -1,0 +1,101 @@
+---
+dependency:
+  name: galaxy
+driver:
+  name: docker
+platforms:
+  # server: two simulated UPS (dummy-ups); client: follows them over the network
+  # Names and network carry the distribution, so several distributions run side by side
+  - name: server-${MOLECULE_DISTRO:-debian13}
+    hostname: server
+    groups: [servers]
+    image: "geerlingguy/docker-${MOLECULE_DISTRO:-debian13}-ansible:latest"
+    command: ${MOLECULE_DOCKER_COMMAND:-""}
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    cgroupns_mode: host
+    privileged: true
+    pre_build_image: true
+    docker_networks:
+      - name: power-molecule-${MOLECULE_DISTRO:-debian13}
+    networks:
+      - name: power-molecule-${MOLECULE_DISTRO:-debian13}
+  - name: client-${MOLECULE_DISTRO:-debian13}
+    hostname: client
+    groups: [clients]
+    image: "geerlingguy/docker-${MOLECULE_DISTRO:-debian13}-ansible:latest"
+    command: ${MOLECULE_DOCKER_COMMAND:-""}
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    cgroupns_mode: host
+    privileged: true
+    pre_build_image: true
+    networks:
+      - name: power-molecule-${MOLECULE_DISTRO:-debian13}
+provisioner:
+  name: ansible
+  playbooks:
+    prepare: prepare/playbook.yml
+    converge: converge/playbook.yml
+    verify: verify/playbook.yml
+  inventory:
+    group_vars:
+      all:
+        # The containers run as root
+        ansible_become: false
+        # Never stop a container: the test looks for this file instead
+        power_poweroff_cmd: touch /tmp/powered-off
+        # Fast polling, so the simulated cuts are seen within seconds
+        power_upsmon_settings: {POLLFREQ: 2, POLLFREQALERT: 2, DEADTIME: 15, HOSTSYNC: 5, FINALDELAY: 0}
+    host_vars:
+      server-${MOLECULE_DISTRO:-debian13}:
+        power_ups:
+          - {name: main, driver: dummy-ups, port: main.dev, desc: Feeds both hosts}
+          # No sdorder: the role adds sdorder -1 to a watched-only UPS
+          - {name: other, driver: dummy-ups, port: other.dev}
+        power_ups_globals: {maxretry: 3, pollinterval: 1}
+        power_feeding_ups: [main]
+        power_listen: [0.0.0.0]
+        power_clients:
+          - {name: client, role: secondary}
+          - {name: supplied, role: secondary, password: molecule-pass}
+        # $$: molecule.yml itself expands environment variables
+        power_notify_cmd: echo "$$NOTIFYTYPE $$UPSNAME" >> /tmp/power-notify.log
+        power_notify_events: [ONBATT, ONLINE, LOWBATT, FSD]
+        # One host per UPS, each with its own threshold
+        power_wake_hosts:
+          - {mac: "02:00:00:00:00:01", ups: main}
+          - {mac: "02:00:00:00:00:02", ups: other, min_charge: 90}
+        power_wake_min_charge: 50
+        power_wake_delay_sec: 1
+        power_poweroff_wait: 10m
+      client-${MOLECULE_DISTRO:-debian13}:
+        power_mode: netclient
+        power_remote_ups:
+          - name: main
+            host: server-${MOLECULE_DISTRO:-debian13}
+            user: client
+            password_from: server-${MOLECULE_DISTRO:-debian13}
+          - name: other
+            host: server-${MOLECULE_DISTRO:-debian13}
+            user: supplied
+            password: molecule-pass
+            feeds: false
+        power_shutdown_on: timer
+        power_shutdown_after_sec: 15
+        power_killpower: false
+verifier:
+  name: ansible
+scenario:
+  name: default
+  test_sequence:
+    - dependency
+    - destroy
+    - create
+    - prepare
+    - check
+    - converge
+    - verify
+    - idempotence
+    - verify
+    - destroy

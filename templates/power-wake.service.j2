@@ -1,0 +1,17 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Wake the hosts once their UPS battery is charged enough
+{% if power_mode == 'netserver' %}
+Wants=network-online.target nut-server.service
+After=network-online.target nut-server.service
+{% else %}
+Wants=network-online.target
+After=network-online.target
+{% endif %}
+
+[Service]
+Type=exec
+ExecStart=/usr/local/sbin/power-wake /etc/nut/power-wake.conf
+
+[Install]
+WantedBy=multi-user.target

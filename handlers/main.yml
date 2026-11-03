@@ -1,0 +1,32 @@
+---
+- name: Reload systemd
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+# ups.conf changes: the enumerator rewrites the per-UPS driver units, then the drivers restart.
+- name: Restart NUT drivers
+  ansible.builtin.systemd_service:
+    name: nut-driver-enumerator.service
+    state: restarted
+  when: not ansible_check_mode
+  notify: Restart driver target
+
+- name: Restart driver target
+  ansible.builtin.systemd_service:
+    name: nut-driver.target
+    state: restarted
+  when: not ansible_check_mode
+  notify: Restart upsd
+
+- name: Restart upsd
+  ansible.builtin.systemd_service:
+    name: nut-server.service
+    state: restarted
+  when: not ansible_check_mode
+  notify: Restart upsmon
+
+- name: Restart upsmon
+  ansible.builtin.systemd_service:
+    name: nut-monitor.service
+    state: restarted
+  when: not ansible_check_mode

@@ -1,0 +1,31 @@
+---
+galaxy_info:
+  role_name: power
+  namespace: cedricfarinazzo
+  author: Cédric Farinazzo
+  description: UPS power cycle with NUT (server and client), ordered or timed shutdown, Wake-on-LAN after power returns
+
+  license: MIT
+
+  min_ansible_version: "2.15"
+
+  platforms:
+    - name: Debian
+      versions:
+        - bookworm
+        - trixie
+    - name: Ubuntu
+      versions:
+        - noble
+        - resolute
+
+  galaxy_tags:
+    - ups
+    - nut
+    - power
+    - shutdown
+    - wakeonlan
+    - system
+    - homelab
+
+dependencies: []

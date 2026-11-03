@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+# Timer mode: any feeding UPS on battery for power_shutdown_after_sec forces the shutdown; its return to mains
+# cancels its own timer only.
+CMDSCRIPT /usr/local/sbin/power-upssched
+PIPEFN /run/nut/upssched.pipe
+LOCKFN /run/nut/upssched.lock
+{% if power_shutdown_on == 'timer' %}
+{% for m in power_feeds %}
+AT ONBATT {{ m.target }} START-TIMER onbatt-{{ m.name }} {{ power_shutdown_after_sec | int }}
+AT ONLINE {{ m.target }} CANCEL-TIMER onbatt-{{ m.name }}
+{% endfor %}
+{% endif %}

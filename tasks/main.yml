@@ -1,0 +1,10 @@
+---
+- name: Validate inputs
+  ansible.builtin.import_tasks: validate.yml
+
+# The scripts first: upsmon then starts with a SHUTDOWNCMD that exists.
+- name: Shutdown and wake
+  ansible.builtin.import_tasks: cycle.yml
+
+- name: UPS monitoring
+  ansible.builtin.import_tasks: nut.yml

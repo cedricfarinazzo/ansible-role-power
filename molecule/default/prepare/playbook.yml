@@ -1,0 +1,30 @@
+---
+- name: Prepare
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Update the package cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+- name: Simulated UPS
+  hosts: servers
+  gather_facts: false
+  tasks:
+    - name: Directory for the simulated UPS
+      ansible.builtin.file:
+        path: /etc/nut
+        state: directory
+        mode: "0755"
+
+    # dummy-ups replays these files; verify.yml edits them to simulate power cuts
+    - name: Simulated UPS on mains
+      ansible.builtin.copy:
+        content: |
+          ups.status: OL
+          battery.charge: 80
+        dest: /etc/nut/{{ item }}.dev
+        mode: "0644"
+        force: false
+      loop: [main, other]

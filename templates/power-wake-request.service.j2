@@ -1,0 +1,7 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Start a power-wake unit per UPS back on mains
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/power-wake-request

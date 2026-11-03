@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Wakes hosts by Wake-on-LAN, each once its own UPS's battery.charge reaches its threshold, delay seconds apart.
+# power-wake <conf>          every host (at boot)
+# power-wake <conf> <ups>    the hosts of that UPS only (power-wake-request, when it is back on mains)
+# Hosts already up ignore the packet. Exits 1 if a host was not woken before the timeout.
+set -uo pipefail
+
+conf=${1:?usage: power-wake <conf> [<ups@host[:port]>]}
+only=${2:-}
+timeout=3600 delay=0 macs=() targets=() charges=() bcasts=()
+while read -r k a b c d; do
+  case $k in
+    timeout) timeout=$a ;;
+    delay) delay=$a ;;
+    host) if [[ -z $only || $b == "$only" ]]; then macs+=("$a"); targets+=("$b"); charges+=("$c"); bcasts+=("$d"); fi ;;
+  esac
+done < <(grep -v '^#' "$conf")
+if (( ${#macs[@]} == 0 )); then echo "no host to wake${only:+ on $only}"; exit 0; fi
+
+# One run per UPS at a time (boot and back-on-mains runs alike): a UPS whose lock another run holds is that run's
+# job. The 2>/dev/null is on the braces: on exec itself it would silence the whole script's stderr.
+lockdir=${POWER_WAKE_LOCK_DIR:-/run/nut}
+declare -A busy=()
+for t in $(printf '%s\n' "${targets[@]}" | sort -u); do
+  if { exec {fd}> "$lockdir/power-wake-${t//[^A-Za-z0-9._-]/_}.lock"; } 2>/dev/null; then
+    flock -n "$fd" || { echo "$t: already being woken by another run"; busy[$t]=1; }
+  else
+    echo "$t: cannot open its lock in $lockdir, going on without" >&2
+  fi
+done
+keep=()
+for i in "${!macs[@]}"; do [[ -n ${busy[${targets[$i]}]:-} ]] || keep+=("$i"); done
+if (( ${#keep[@]} == 0 )); then exit 0; fi
+
+end=$((SECONDS + timeout))
+woke=0
+pending=("${keep[@]}")
+while (( ${#pending[@]} > 0 )); do
+  declare -A now=()
+  left=()
+  for i in "${pending[@]}"; do
+    t=${targets[$i]}
+    if (( charges[i] > 0 )) && [[ -z ${now[$t]+x} ]]; then
+      v=$(upsc "$t" battery.charge 2>/dev/null) || v=""
+      now[$t]=${v%%.*}
+    fi
+    n=${now[$t]:-}
+    if (( charges[i] == 0 )) || { [[ $n =~ ^[0-9]+$ ]] && (( n >= charges[i] )); }; then
+      if (( woke > 0 && delay > 0 )); then sleep "$delay"; fi
+      args=()
+      if [[ ${bcasts[$i]} != - ]]; then args=(-i "${bcasts[$i]}"); fi
+      echo "$t at ${n:-unread}% >= ${charges[$i]}%: waking ${macs[$i]}"
+      wakeonlan "${args[@]}" "${macs[$i]}" || echo "${macs[$i]}: wakeonlan failed" >&2
+      woke=$((woke + 1))
+    else
+      left+=("$i")
+    fi
+  done
+  unset now
+  pending=("${left[@]}")
+  (( ${#pending[@]} == 0 )) && break
+  if (( SECONDS >= end )); then
+    for i in "${pending[@]}"; do echo "${macs[$i]}: ${targets[$i]} below ${charges[$i]}% after ${timeout}s, not woken" >&2; done
+    exit 1
+  fi
+  sleep "${POWER_WAKE_POLL_SEC:-30}"
+done

@@ -1,0 +1,171 @@
+---
+# A wrong type here would render a different, valid NUT config: check every input first.
+- name: Mode and common settings are sound
+  ansible.builtin.assert:
+    that:
+      - power_mode in ['netserver', 'netclient']
+      - power_shutdown_on in ['lowbatt', 'timer']
+      - power_shutdown_after_sec | string is match('^[0-9]+$') and power_shutdown_after_sec | int > 0
+      - power_killpower is boolean
+      - power_poweroff_wait | string is match('^([0-9]+[smhd]?)?$')
+      - power_poweroff_wait | string is not match('^0+[smhd]?$')
+      - power_notify_cmd is string and power_notify_cmd is not search('[\n]')
+      - power_notify_events is sequence and power_notify_events is not string
+      - power_notify_events | difference(power_nut_events) | length == 0
+      - power_poweroff_cmd is string and power_poweroff_cmd | length > 0
+      - power_poweroff_cmd is not search('[\n]')
+      - power_secret_dir is match(power_path_re) and power_key is match(power_path_re)
+      - power_shutdown_on != 'timer' or power_feeds | length > 0
+      - power_upsmon_settings is mapping
+      - power_upsmon_settings.keys() | map('string') | reject('match', '^[A-Z_]+$') | list | length == 0
+      - power_upsmon_settings.keys() | intersect(power_upsmon_owned) | length == 0
+      - power_upsmon_settings.values() | map('string') | select('search', '["\n]') | list | length == 0
+    fail_msg: >-
+      power_mode netserver|netclient; power_shutdown_on lowbatt|timer with power_shutdown_after_sec > 0 and a feeding
+      UPS; power_secret_dir and power_key absolute paths;
+      power_killpower bool; power_poweroff_wait a duration above 0 (300, 5m) or empty;
+      power_notify_events among {{ power_nut_events | join(', ') }};
+      power_upsmon_settings upper-case keys other than {{ power_upsmon_owned | join(', ') }}, no quote or newline
+    quiet: true
+
+- name: Server settings are sound
+  ansible.builtin.assert:
+    that:
+      - power_ups is sequence and power_ups is not string and power_ups | length > 0
+      - power_listen is sequence and power_listen is not string
+      - power_listen | map('string') | reject('match', '^[0-9A-Za-z.:-]+$') | list | length == 0
+      - power_clients is sequence and power_clients is not string
+      - power_feeding_ups is sequence and power_feeding_ups is not string
+      - power_feeding_ups | difference(power_ups | map(attribute='name')) | length == 0
+      - power_ups_globals is mapping and power_upsd_settings is mapping
+      - power_ups_globals.keys() | map('string') | reject('match', '^[a-z0-9_.]+$') | list | length == 0
+      - power_upsd_settings.keys() | map('string') | reject('match', '^[A-Z_]+$') | list | length == 0
+      - "'LISTEN' not in power_upsd_settings"
+      - (power_ups_globals.values() | list + power_upsd_settings.values() | list) | map('string')
+        | select('search', '["\n]') | list | length == 0
+      - power_remote_ups | length == 0
+    fail_msg: >-
+      netserver: power_ups non-empty; power_listen addresses; power_clients and power_feeding_ups lists, the last
+      naming power_ups entries; power_ups_globals lower-case keys, power_upsd_settings upper-case keys but LISTEN;
+      power_remote_ups is for netclient
+    quiet: true
+  when: power_mode == 'netserver'
+
+- name: Each UPS is well formed
+  ansible.builtin.assert:
+    that:
+      - item is mapping and item.name is defined and item.name is string and item.name is match('^[A-Za-z0-9_-]+$')
+      - item.keys() | difference(['name', 'driver', 'port', 'desc', 'options']) | length == 0
+      - item.driver is defined and item.driver is string and item.driver is match('^[a-z0-9_-]+$')
+      - item.port | default('auto') | string is not search('["\s]')
+      - item.desc | default('') | string is not search('["\n]')
+      - item.options | default({}) is mapping
+      - item.options | default({}) | dict2items | map(attribute='key') | reject('match', '^[a-z0-9_.]+$')
+        | list | length == 0
+      - item.options | default({}) | dict2items | map(attribute='value') | map('string')
+        | select('search', '["\n]') | list | length == 0
+      - power_ups | map(attribute='name') | select('equalto', item.name) | list | length == 1
+    fail_msg: "{{ item.name | default('?') }}: keys name (unique), driver, port, desc, options (no quote or newline)"
+    quiet: true
+  loop: "{{ power_ups if power_mode == 'netserver' else [] }}"
+  loop_control:
+    label: "{{ item.name | default('?') }}"
+
+- name: Each client is well formed
+  ansible.builtin.assert:
+    that:
+      - item is mapping and item.keys() | difference(['name', 'role', 'password']) | length == 0
+      - item.name is defined and item.name is string and item.name is match('^[a-z0-9_-]+$')
+      - item.name != 'upsmon-local'
+      - item.role | default('') in ['primary', 'secondary']
+      - item.password is not defined or (item.password is string
+        and item.password is match('^[A-Za-z0-9._~+=@%^*-]{8,}$'))
+      - power_clients | map(attribute='name') | select('equalto', item.name) | list | length == 1
+    fail_msg: >-
+      {{ item.name | default('?') }}: {name, role: primary|secondary, password (8+ of A-Z a-z 0-9 . _ ~ + = @ % ^ * -)};
+      upsmon-local is this host's own
+    quiet: true
+  loop: "{{ power_clients if power_mode == 'netserver' else [] }}"
+  loop_control:
+    label: "{{ item.name | default('?') }}"
+  no_log: true
+
+- name: Client settings are sound
+  ansible.builtin.assert:
+    that:
+      - power_remote_ups is sequence and power_remote_ups is not string and power_remote_ups | length > 0
+      - power_ups | length == 0
+    fail_msg: "netclient: power_remote_ups non-empty; power_ups is for netserver"
+    quiet: true
+  when: power_mode == 'netclient'
+
+- name: Each remote UPS is well formed
+  ansible.builtin.assert:
+    that:
+      - item is mapping
+      - item.keys() | difference(['name', 'host', 'port', 'user', 'password', 'password_from', 'role', 'feeds'])
+        | length == 0
+      - item.name is defined and item.name is string and item.name is match('^[A-Za-z0-9_-]+$')
+      - item.host is defined and item.host | string is match('^[A-Za-z0-9.-]+$')
+      - item.port | default(3493) | string is match('^[0-9]{1,5}$')
+      - item.user is defined and item.user | string is match('^[a-z0-9_-]+$')
+      - (item.password is defined) != (item.password_from is defined)
+      - item.password is not defined or item.password is match('^[A-Za-z0-9._~+=@%^*-]{8,}$')
+      - item.password_from is not defined or item.password_from in groups['all']
+      - item.role | default('secondary') in ['primary', 'secondary']
+      - item.feeds | default(true) is boolean
+      - item.feeds | default(true) or item.role | default('secondary') == 'secondary'
+      - power_shutdown_on != 'timer' or item.role | default('secondary') == 'secondary'
+      - power_remote_ups | selectattr('name', 'equalto', item.name) | list | length == 1
+    fail_msg: >-
+      {{ item.name | default('?') }}: keys name, host, port, user, exactly one of password (8+ of A-Z a-z 0-9
+      . _ ~ + = @ % ^ * -) or password_from (an inventory host), role primary|secondary (secondary when feeds
+      is false or in timer mode), feeds bool; host a name or IPv4 address; name unique
+    quiet: true
+  loop: "{{ power_remote_ups if power_mode == 'netclient' else [] }}"
+  loop_control:
+    label: "{{ item.name | default('?') }}@{{ item.host | default('?') }}"
+  no_log: true
+
+- name: Shutdown and wake settings are sound
+  ansible.builtin.assert:
+    that:
+      - power_shutdown_targets is sequence and power_shutdown_targets is not string
+      - power_shutdown_targets | reject('mapping') | list | length == 0
+      - power_shutdown_targets | rejectattr('host', 'defined') | list | length == 0
+      - power_shutdown_targets | map('list') | flatten | difference(['host', 'port', 'user']) | length == 0
+      - power_shutdown_targets | map(attribute='host') | map('string')
+        | reject('match', '^[A-Za-z0-9.:-]+$') | list | length == 0
+      - power_shutdown_targets | map(attribute='user', default='root') | map('string')
+        | reject('match', '^[a-z_][a-z0-9_-]*$') | list | length == 0
+      - power_shutdown_targets | map(attribute='port', default=22) | map('string')
+        | reject('match', '^[0-9]{1,5}$') | list | length == 0
+      - power_wake_hosts is sequence and power_wake_hosts is not string
+      - power_wake_min_charge | string is match('^[0-9]{1,3}$')
+      - power_wake_min_charge | int >= 0 and power_wake_min_charge | int <= 100
+      - power_shutdown_wait_sec | string is match('^[0-9]+$')
+      - power_wake_timeout_sec | string is match('^[0-9]+$')
+      - power_wake_delay_sec | string is match('^[0-9]+$')
+      - power_wake_broadcast is string and power_wake_broadcast is match('^[0-9.]*$')
+    fail_msg: >-
+      power_shutdown_targets: list of {host, port, user}; power_wake_hosts a list; power_wake_min_charge 0-100;
+      durations in seconds
+    quiet: true
+
+- name: Each host to wake is well formed
+  ansible.builtin.assert:
+    that:
+      - item is mapping and item.keys() | difference(['mac', 'ups', 'min_charge', 'broadcast']) | length == 0
+      - item.mac is defined and item.mac | string is match('^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$')
+      - item.ups is defined and item.ups in power_watched_names
+      - item.min_charge | default(0) | string is match('^[0-9]{1,3}$') and item.min_charge | default(0) | int <= 100
+      - item.broadcast | default('') | string is match('^[0-9.]*$')
+      - power_wake_hosts | map(attribute='mac') | map('lower') | select('equalto', item.mac | lower)
+        | list | length == 1
+    fail_msg: >-
+      {{ item.mac | default('?') }}: keys mac (unique), ups (one of {{ power_watched_names | join(', ') }}),
+      min_charge 0-100, broadcast (an address)
+    quiet: true
+  loop: "{{ power_wake_hosts }}"
+  loop_control:
+    label: "{{ item.mac | default('?') }}"

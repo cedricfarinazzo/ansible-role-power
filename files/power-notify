@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# upsmon's NOTIFYCMD (runs as the nut user): hands ONBATT/ONLINE to upssched in timer mode, requests power-wake
+# for a UPS back on mains, and runs the configured command on the configured events, with NOTIFYTYPE and UPSNAME set
+# and the message as $1.
+set -uo pipefail
+
+conf=${POWER_NOTIFY_CONF:-/etc/nut/power-notify.conf}
+timer=0 wake=0 events="" cmd=""
+while read -r k v; do
+  case $k in timer) timer=$v ;; wake) wake=$v ;; events) events=$v ;; cmd) cmd=$v ;; esac
+done < <(grep -v '^#' "$conf")
+
+type=${NOTIFYTYPE:-}
+status=0
+if [[ $timer == 1 && ( $type == ONBATT || $type == ONLINE ) ]]; then
+  ${POWER_UPSSCHED:-upssched} "$@" || status=1
+fi
+# A UPS back on mains: leave a request for power-wake-request.path (root), which runs the wait in its own unit,
+# so a restart of upsmon never kills it
+if [[ $wake == 1 && $type == ONLINE && -n ${UPSNAME:-} ]]; then
+  req=${POWER_WAKE_REQUESTS:-/run/nut/power-wake-requests}
+  name=${UPSNAME//[^A-Za-z0-9._-]/_}
+  { printf '%s\n' "$UPSNAME" > "$req/.$name" && mv -f "$req/.$name" "$req/$name"; } || status=1
+fi
+if [[ -n $cmd && " $events " == *" $type "* ]]; then
+  bash -c "$cmd" power-notify "${1:-}" || status=1
+fi
+exit "$status"

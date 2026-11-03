@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# power-wake-request.service (root, started by power-wake-request.path): for each UPS power-notify reported back
+# on mains, start power-wake for its hosts in a transient unit of its own, named after the UPS: a second request
+# while that unit still waits is dropped by systemd.
+set -uo pipefail
+
+req=${POWER_WAKE_REQUESTS:-/run/nut/power-wake-requests}
+for f in "$req"/*; do
+  [[ -f $f ]] || continue
+  target=$(head -n 1 "$f")
+  rm -f "$f"
+  if [[ ! $target =~ ^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+(:[0-9]+)?$ ]]; then echo "ignored request: $target" >&2; continue; fi
+  unit=power-wake-$(printf '%s' "$target" | sha1sum | cut -c1-12)
+  if ${POWER_SYSTEMD_RUN:-systemd-run} --no-block --collect --quiet --unit="$unit" -p SyslogIdentifier=power-wake \
+    /usr/local/sbin/power-wake /etc/nut/power-wake.conf "$target"; then
+    echo "waking the hosts of $target ($unit)"
+  else
+    echo "$target: already being woken"
+  fi
+done
