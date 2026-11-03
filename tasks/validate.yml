@@ -8,6 +8,7 @@
       - power_shutdown_after_sec | string is match('^[0-9]+$') and power_shutdown_after_sec | int > 0
       - power_killpower is boolean
       - power_poweroff_wait | string is match('^([0-9]+[smhd]?)?$')
+      - power_poweroff_wait | string is not match('^0+[smhd]?$')
       - power_notify_cmd is string and power_notify_cmd is not search('[\n]')
       - power_notify_events is sequence and power_notify_events is not string
       - power_notify_events | difference(power_nut_events) | length == 0
@@ -22,7 +23,7 @@
     fail_msg: >-
       power_mode netserver|netclient; power_shutdown_on lowbatt|timer with power_shutdown_after_sec > 0 and a feeding
       UPS; power_secret_dir and power_key absolute paths;
-      power_killpower bool; power_poweroff_wait a duration (300, 5m) or empty;
+      power_killpower bool; power_poweroff_wait a duration above 0 (300, 5m) or empty;
       power_notify_events among {{ power_nut_events | join(', ') }};
       power_upsmon_settings upper-case keys other than {{ power_upsmon_owned | join(', ') }}, no quote or newline
     quiet: true
@@ -105,7 +106,7 @@
       - item.keys() | difference(['name', 'host', 'port', 'user', 'password', 'password_from', 'role', 'feeds'])
         | length == 0
       - item.name is defined and item.name is string and item.name is match('^[A-Za-z0-9_-]+$')
-      - item.host is defined and item.host | string is match('^[A-Za-z0-9.:-]+$')
+      - item.host is defined and item.host | string is match('^[A-Za-z0-9.-]+$')
       - item.port | default(3493) | string is match('^[0-9]{1,5}$')
       - item.user is defined and item.user | string is match('^[a-z0-9_-]+$')
       - (item.password is defined) != (item.password_from is defined)
@@ -114,11 +115,12 @@
       - item.role | default('secondary') in ['primary', 'secondary']
       - item.feeds | default(true) is boolean
       - item.feeds | default(true) or item.role | default('secondary') == 'secondary'
+      - power_shutdown_on != 'timer' or item.role | default('secondary') == 'secondary'
       - power_remote_ups | selectattr('name', 'equalto', item.name) | list | length == 1
     fail_msg: >-
       {{ item.name | default('?') }}: keys name, host, port, user, exactly one of password (8+ of A-Z a-z 0-9
       . _ ~ + = @ % ^ * -) or password_from (an inventory host), role primary|secondary (secondary when feeds
-      is false), feeds bool; name unique
+      is false or in timer mode), feeds bool; host a name or IPv4 address; name unique
     quiet: true
   loop: "{{ power_remote_ups if power_mode == 'netclient' else [] }}"
   loop_control:

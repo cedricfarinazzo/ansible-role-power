@@ -170,6 +170,12 @@
         {{ [power_server, power_client]
         | product(['/tmp/powered-off', '/tmp/power-notify.log', '/etc/killpower']) | list }}
 
+    - name: Journal cursor on the client before the short cut
+      ansible.builtin.command: journalctl --show-cursor -n 0 -q
+      register: power_verify_cursor_client
+      delegate_to: "{{ power_client }}"
+      changed_when: false
+
     - name: A short cut
       ansible.builtin.copy:
         content: |
@@ -178,13 +184,16 @@
         dest: /etc/nut/main.dev
         mode: "0644"
 
-    - name: Let the client see it
-      ansible.builtin.command: upsc main@{{ power_server }} ups.status
+    # upsmon's own view, not upsd's: only then has its ONBATT started the timer
+    - name: The client's upsmon saw the cut (its timer is running)
+      ansible.builtin.command: >-
+        journalctl -u nut-monitor --no-pager -q --after-cursor
+        {{ power_verify_cursor_client.stdout | regex_replace('^-- cursor: ', '') | quote }}
       register: power_verify_short
       delegate_to: "{{ power_client }}"
       changed_when: false
-      until: "'OB' in power_verify_short.stdout"
-      retries: 10
+      until: "'main@' ~ power_server ~ ':3493 on battery' in power_verify_short.stdout"
+      retries: 15
       delay: 1
 
     - name: Mains back within the timer
@@ -205,9 +214,19 @@
       register: power_verify_cancel
       delegate_to: "{{ power_client }}"
 
+    - name: Read what the client's upsmon saw since the short cut
+      ansible.builtin.command: >-
+        journalctl -u nut-monitor --no-pager -q --after-cursor
+        {{ power_verify_cursor_client.stdout | regex_replace('^-- cursor: ', '') | quote }}
+      register: power_verify_cancel_log
+      delegate_to: "{{ power_client }}"
+      changed_when: false
+
     - name: The return to mains cancelled the timer
       ansible.builtin.assert:
-        that: not power_verify_cancel.stat.exists
+        that:
+          - not power_verify_cancel.stat.exists
+          - "'main@' ~ power_server ~ ':3493 on line power' in power_verify_cancel_log.stdout"
 
     - name: A long cut
       ansible.builtin.copy:
@@ -240,6 +259,11 @@
           - "'ONLINE main@localhost' in power_verify_timer_server.stdout"
           - "'server-up' in power_verify_timer_server.stdout"
 
+    - name: Journal cursor on the server before mains comes back
+      ansible.builtin.command: journalctl --show-cursor -n 0 -q
+      register: power_verify_cursor_server
+      changed_when: false
+
     - name: Mains back
       ansible.builtin.copy:
         content: |
@@ -249,7 +273,9 @@
         mode: "0644"
 
     - name: Back on mains, the server wakes main's host by itself
-      ansible.builtin.shell: journalctl -t power-wake --no-pager -q
+      ansible.builtin.command: >-
+        journalctl -t power-wake --no-pager -q --after-cursor
+        {{ power_verify_cursor_server.stdout | regex_replace('^-- cursor: ', '') | quote }}
       register: power_verify_online_wake
       changed_when: false
       until: "'waking 02:00:00:00:00:01' in power_verify_online_wake.stdout"

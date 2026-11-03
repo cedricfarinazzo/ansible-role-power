@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Wakes hosts by Wake-on-LAN, each once its own UPS's battery.charge reaches its threshold, delay seconds apart.
 # power-wake <conf>          every host (at boot)
-# power-wake <conf> <ups>    the hosts of that UPS only (power-notify, when it is back on mains)
+# power-wake <conf> <ups>    the hosts of that UPS only (power-wake-request, when it is back on mains)
 # Hosts already up ignore the packet. Exits 1 if a host was not woken before the timeout.
 set -uo pipefail
 
@@ -17,16 +17,24 @@ while read -r k a b c d; do
 done < <(grep -v '^#' "$conf")
 if (( ${#macs[@]} == 0 )); then echo "no host to wake${only:+ on $only}"; exit 0; fi
 
-# One run per UPS at a time: a UPS flapping on and off mains does not stack waiters
-# (the 2>/dev/null is on the braces: on exec itself it would silence the whole script's stderr)
-lock=${POWER_WAKE_LOCK_DIR:-/run/nut}/power-wake-${only:-all}.lock
-if { exec 9> "${lock//[^A-Za-z0-9._\/-]/_}"; } 2>/dev/null; then
-  flock -n 9 || { echo "already waking ${only:-all}"; exit 0; }
-fi
+# One run per UPS at a time (boot and back-on-mains runs alike): a UPS whose lock another run holds is that run's
+# job. The 2>/dev/null is on the braces: on exec itself it would silence the whole script's stderr.
+lockdir=${POWER_WAKE_LOCK_DIR:-/run/nut}
+declare -A busy=()
+for t in $(printf '%s\n' "${targets[@]}" | sort -u); do
+  if { exec {fd}> "$lockdir/power-wake-${t//[^A-Za-z0-9._-]/_}.lock"; } 2>/dev/null; then
+    flock -n "$fd" || { echo "$t: already being woken by another run"; busy[$t]=1; }
+  else
+    echo "$t: cannot open its lock in $lockdir, going on without" >&2
+  fi
+done
+keep=()
+for i in "${!macs[@]}"; do [[ -n ${busy[${targets[$i]}]:-} ]] || keep+=("$i"); done
+if (( ${#keep[@]} == 0 )); then exit 0; fi
 
 end=$((SECONDS + timeout))
 woke=0
-pending=("${!macs[@]}")
+pending=("${keep[@]}")
 while (( ${#pending[@]} > 0 )); do
   declare -A now=()
   left=()

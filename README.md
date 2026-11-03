@@ -107,7 +107,8 @@ power_upsd_settings: {}            # e.g. {MAXAGE: 25}
 ### netclient
 
 ```yaml
-# Each {name, host, port (3493), user, password | password_from, role (secondary), feeds (true)}; name unique
+# Each {name, host, port (3493), user, password | password_from, role (secondary), feeds (true)}; name unique;
+# host a name or an IPv4 address
 # password_from: the inventory host running that upsd with this role; the password is read there
 # feeds: false = watched only, its battery never stops this host, always secondary
 # role must match the role of that user in the server's power_clients
@@ -128,7 +129,7 @@ power_poweroff_cmd: /sbin/shutdown -h +0
 # netserver: power the feeding UPS off after the shutdown (POWERDOWNFLAG); ignored on a netclient
 power_killpower: true
 # With killpower: reboot this long after commanding the UPS off, if the host is still up (POWEROFF_WAIT)
-power_poweroff_wait: ""            # e.g. 5m; empty = halt and wait for the UPS
+power_poweroff_wait: ""            # e.g. 5m, longer than the UPS offdelay; empty = halt and wait for the UPS
 # Extra upsmon.conf settings
 power_upsmon_settings: {}          # e.g. {DEADTIME: 25, FINALDELAY: 0, HOSTSYNC: 30}
 ```
@@ -145,7 +146,7 @@ It makes the UPS cut its own outputs at the very end of the shutdown. Without it
 6. The host halts; the UPS cuts its outputs after `offdelay`. With `power_poweroff_wait`, the hook first sleeps that long, then reboots the host.
 7. When mains returns, the UPS waits `ondelay`, then powers its outputs: the hosts boot. upsmon clears a leftover flag when it starts. `power-wake` wakes the hosts that need Wake-on-LAN once the battery is charged enough.
 
-**The power race:** mains can come back during steps 4 to 6. Some UPS models then ignore the off command, because they are on mains again: the host stays halted and nothing power-cycles it. `power_poweroff_wait` covers it. After the UPS command, the hook sleeps that long (longer than `offdelay`, e.g. `5m`), then reboots the host. If the UPS did cut, the host is already off and the sleep never ends. If it did not, the host comes back.
+**The power race:** mains can come back during steps 4 to 6. Some UPS models then ignore the off command, because they are on mains again: the host stays halted and nothing power-cycles it. `power_poweroff_wait` covers it. After the UPS command, the hook sleeps that long, then reboots the host. It must be longer than the UPS's `offdelay` (20 s by default), or the host reboots on battery and loses power mid-boot; `0` is refused. If the UPS did cut, the host is already off and the sleep never ends. If it did not, the host comes back.
 
 Two guards:
 - Only a netserver with a feeding UPS writes the flag; a client never powers a UPS off.
@@ -179,7 +180,7 @@ A host is woken once **its own** UPS reaches **its own** `min_charge`:
 - **At this host's boot** (`power-wake.service`), for every host: after a full power cut, when this host comes back first.
 - **When a UPS is back on mains** (upsmon's `ONLINE`), for that UPS's hosts only: after a cut of one UPS while this host stayed up on another.
 
-Hosts already up ignore the packet. A UPS that flaps on and off mains never starts two waits at once (one lock per UPS); the wait runs as the nut user, logs to `journalctl -t power-wake` and gives up after `power_wake_timeout_sec`.
+Hosts already up ignore the packet. On mains, upsmon's notify script leaves a request that a root path unit turns into one systemd unit per UPS (`power-wake-<id>`): the wait survives an upsmon restart, and a UPS that flaps on and off mains never starts two waits at once. Boot and on-mains runs also share one lock per UPS. Every run logs to `journalctl -t power-wake` and gives up after `power_wake_timeout_sec`.
 
 ## 🎯 Usage Examples
 
@@ -193,8 +194,10 @@ Two ways to stop the other machines on a UPS; they combine.
 | Order | Strict: one target at a time, each waited for | None: each client stops when its UPS is critical |
 | On the target | SSH with the server's key, restricted to a poweroff command | This role in `netclient` mode |
 | Server dead or unreachable during a cut | Nobody stops the targets | Each client stops itself (`DEADTIME` after it loses the data while on battery) |
-| Per-host choice | One trigger, on the server | Each client picks `lowbatt` or `timer`, and which UPS feed it |
+| Per-host choice | One trigger, on the server | Each client picks `lowbatt` or `timer` (as a secondary), and which UPS feed it |
 | Good for | Appliances and switches without NUT; a strict order (VMs, then cluster, then storage) | Ordinary Linux hosts |
+
+A netserver in `timer` mode sets FSD when its timer runs out, so it stops every client of that UPS at that moment, whatever their own choice. A netclient in `timer` mode must be a secondary: as a primary its FSD would stop the whole UPS, server included.
 
 **Both** is the safest: the clients protect themselves, and the server enforces the order when it is up.
 
@@ -371,12 +374,12 @@ power_notify_cmd: >-
 power_notify_events: [ONBATT, ONLINE, LOWBATT, REPLBATT, COMMBAD, COMMOK]
 ```
 
-A Discord or Slack-style webhook: build the JSON with `jq`, so a quote in the message can never break it. Keep the webhook URL out of the inventory: put it in a file only the nut user can read, and read it in the command.
+A Discord or Slack-style webhook: build the JSON with `jq`, so a quote in the message can never break it. The command line is visible to every local user (`ps`), so it must never hold a token: put the webhook URL in a curl config file only the nut user can read, e.g. `/etc/nut/webhook.curl` (`root:nut`, `0640`) containing `url = "https://chat.example/hooks/..."`, and let curl read it.
 
 ```yaml
 power_notify_cmd: >-
   jq -cn --arg t "$NOTIFYTYPE" --arg m "$1" '{content: ($t + ": " + $m)}'
-  | curl -fsS -m 10 -H 'Content-Type: application/json' -d @- "$(cat /etc/nut/webhook-url)"
+  | curl -fsS -m 10 -K /etc/nut/webhook.curl -H 'Content-Type: application/json' -d @-
 power_notify_events: [ONBATT, ONLINE, LOWBATT, FSD, SHUTDOWN, REPLBATT, NOCOMM]
 ```
 

@@ -3,7 +3,8 @@
 # upsmon events (upsmon.conf NOTIFYFLAG) known to NUT 2.8.0, the oldest supported
 power_nut_events: [ONLINE, ONBATT, LOWBATT, FSD, COMMOK, COMMBAD, SHUTDOWN, REPLBATT, NOCOMM, NOPARENT, CAL]
 # upsmon.conf keys the role writes itself
-power_upsmon_owned: [MONITOR, MINSUPPLIES, SHUTDOWNCMD, POWERDOWNFLAG, NOTIFYCMD, NOTIFYFLAG]
+# RUN_AS_USER too: the notify and upssched scripts read root:nut files as the nut user
+power_upsmon_owned: [MONITOR, MINSUPPLIES, SHUTDOWNCMD, POWERDOWNFLAG, NOTIFYCMD, NOTIFYFLAG, RUN_AS_USER]
 # Names a power_wake_hosts entry's ups may take
 power_watched_names: >-
   {{ (power_ups if power_mode == 'netserver' else power_remote_ups) | map(attribute='name') | list }}

@@ -1,0 +1,9 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Wake the hosts of a UPS back on mains (requests from power-notify)
+
+[Path]
+DirectoryNotEmpty=/run/nut/power-wake-requests
+
+[Install]
+WantedBy=paths.target

@@ -110,6 +110,29 @@
   # Check mode on a first run: no nut group yet
   ignore_errors: "{{ ansible_check_mode }}"
 
+# power-notify (nut) drops a request there; power-wake-request.path (root) picks it up
+- name: Directory for the wake requests, at every boot
+  ansible.builtin.copy:
+    content: "d /run/nut/power-wake-requests 0770 root nut -\n"
+    dest: /etc/tmpfiles.d/power-wake.conf
+    owner: root
+    group: root
+    mode: "0644"
+  register: power_tmpfiles
+
+- name: Directory for the wake requests, now
+  ansible.builtin.command: systemd-tmpfiles --create /etc/tmpfiles.d/power-wake.conf
+  when: power_tmpfiles is changed and not ansible_check_mode
+  changed_when: true
+
+- name: Wake requests watched
+  ansible.builtin.systemd_service:
+    name: power-wake-request.path
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: not ansible_check_mode
+
 # upssched (timer mode) runs as the nut user; upsmon -c fsd must signal the root upsmon process.
 - name: Let upssched force the shutdown
   ansible.builtin.copy:

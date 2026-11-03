@@ -84,27 +84,36 @@ echo 80 > "$WORK/charge-rack"; : > "$WORK/calls"; start=$SECONDS
 "$F/power-wake" "$WORK/wake.conf" > /dev/null
 if has 'wakeonlan 02:00:00:00:aa:01' && has 'wakeonlan 02:00:00:00:aa:02' && (( SECONDS - start >= 1 )); then ok "the delay separates two hosts"; else ko "delay between hosts"; fi
 exec 8> "$WORK/power-wake-rack_localhost.lock"; flock 8
-out=$("$F/power-wake" "$WORK/wake.conf" rack@localhost)
-if [[ $out == "already waking rack@localhost" ]]; then ok "a second run for the same UPS steps aside"; else ko "lock ($out)"; fi
+: > "$WORK/calls"; out=$("$F/power-wake" "$WORK/wake.conf")
+if [[ $out == *"rack@localhost: already being woken by another run"* ]] && ! grep -q wakeonlan "$WORK/calls"; then ok "a UPS another run holds is left to it, boot run included"; else ko "lock ($out)"; fi
 exec 8>&-
 
 # --- power-notify ---
 printf 'timer 1\nwake 1\nevents ONBATT LOWBATT\ncmd echo "notified $NOTIFYTYPE $UPSNAME $1" >> "$STUB_DIR/calls"\n' > "$WORK/notify.conf"
-printf '#!/bin/sh\necho "power-wake $*" >> "$STUB_DIR/calls"\n' > "$WORK/bin/power-wake-stub"; chmod +x "$WORK/bin/power-wake-stub"
-export POWER_NOTIFY_CONF=$WORK/notify.conf POWER_WAKE=$WORK/bin/power-wake-stub POWER_WAKE_CONF=$WORK/w.conf
+mkdir "$WORK/req"
+export POWER_NOTIFY_CONF=$WORK/notify.conf POWER_WAKE_REQUESTS=$WORK/req
 : > "$WORK/calls"; NOTIFYTYPE=ONBATT UPSNAME=pdu@localhost "$F/power-notify" "on battery"
 if has 'upssched on battery' && has 'notified ONBATT pdu@localhost on battery'; then ok "ONBATT reaches upssched and the command"; else ko "ONBATT dispatch"; fi
 : > "$WORK/calls"; NOTIFYTYPE=ONLINE UPSNAME=pdu@localhost "$F/power-notify" "on line"
-sleep 1
 if has 'upssched on line' && ! grep -q '^notified' "$WORK/calls"; then ok "ONLINE reaches upssched, not the command (not in events)"; else ko "ONLINE dispatch"; fi
-if has "power-wake $WORK/w.conf pdu@localhost"; then ok "ONLINE starts power-wake for that UPS"; else ko "wake on mains"; fi
+if [[ $(cat "$WORK/req/pdu_localhost" 2>/dev/null) == pdu@localhost ]]; then ok "ONLINE leaves a wake request for that UPS"; else ko "wake request"; fi
 : > "$WORK/calls"; NOTIFYTYPE=COMMBAD UPSNAME=pdu@localhost "$F/power-notify" "lost"
 if [[ ! -s $WORK/calls ]]; then ok "an event outside both is ignored"; else ko "COMMBAD dispatch"; fi
 printf 'timer 0\nwake 0\nevents ONBATT\ncmd echo "notified $NOTIFYTYPE" >> "$STUB_DIR/calls"\n' > "$WORK/notify.conf"
-: > "$WORK/calls"; NOTIFYTYPE=ONLINE UPSNAME=pdu@localhost "$F/power-notify" "on line"; sleep 1
-if ! grep -q '^power-wake' "$WORK/calls"; then ok "wake 0: no power-wake on mains"; else ko "power-wake with wake 0"; fi
+rm -f "$WORK/req/"*; NOTIFYTYPE=ONLINE UPSNAME=pdu@localhost "$F/power-notify" "on line"
+if [[ -z $(ls -A "$WORK/req") ]]; then ok "wake 0: no request on mains"; else ko "request with wake 0"; fi
 : > "$WORK/calls"; NOTIFYTYPE=ONBATT UPSNAME=pdu@localhost "$F/power-notify" "on battery"
 if ! grep -q '^upssched' "$WORK/calls" && has 'notified ONBATT'; then ok "lowbatt mode: no upssched"; else ko "upssched outside timer mode"; fi
+
+# --- power-wake-request ---
+printf '#!/bin/sh\necho "systemd-run $*" >> "$STUB_DIR/calls"\ncase "$*" in *busy@*) exit 1 ;; esac\n' > "$WORK/bin/systemd-run"; chmod +x "$WORK/bin/systemd-run"
+rm -f "$WORK/req/"*
+printf 'pdu@198.51.100.4:3493\n' > "$WORK/req/a"; printf 'busy@localhost\n' > "$WORK/req/b"; printf 'x; rm -rf /\n' > "$WORK/req/c"
+: > "$WORK/calls"; out=$("$F/power-wake-request" 2>&1)
+if grep -qE '^systemd-run --no-block --collect --quiet --unit=power-wake-[0-9a-f]{12} -p SyslogIdentifier=power-wake /usr/local/sbin/power-wake /etc/nut/power-wake.conf pdu@198.51.100.4:3493$' "$WORK/calls"; then ok "a request starts power-wake for that UPS in its own unit"; else ko "request unit"; fi
+if [[ $out == *"busy@localhost: already being woken"* ]]; then ok "a UPS whose unit still waits is not started twice"; else ko "busy unit"; fi
+if [[ $out == *"ignored request: x; rm -rf /"* ]] && ! grep -q 'rm -rf' "$WORK/calls"; then ok "a malformed request is ignored"; else ko "malformed request"; fi
+if [[ -z $(ls -A "$WORK/req") ]]; then ok "every request is consumed"; else ko "requests left"; fi
 
 # --- power-upssched ---
 : > "$WORK/calls"; "$F/power-upssched" onbatt-pdu
