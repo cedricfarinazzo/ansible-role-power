@@ -154,6 +154,83 @@ power_wake_broadcast: ""           # empty = 255.255.255.255
 
 ## 🎯 Usage Examples
 
+### Several UPS, several hosts
+
+Three UPS on one small server, `pi`, and three hosts that each follow the UPS they are plugged into:
+
+| UPS | Feeds |
+|-----|-------|
+| `rack-a` | `pi`, `db` (first power supply) |
+| `rack-b` | `db` (second power supply), `web` |
+| `office` | `nas` |
+
+`host_vars/pi.yml` — the server: every UPS is plugged into it, only `rack-a` feeds it.
+
+```yaml
+power_ups:
+  - name: rack-a
+    driver: usbhid-ups
+    options: {vendorid: "051d", productid: "0002", serial: "AS1234500001"}
+  - name: rack-b
+    driver: usbhid-ups
+    options: {vendorid: "051d", productid: "0002", serial: "AS1234500002"}
+  - name: office
+    driver: usbhid-ups
+    options: {vendorid: "0764", productid: "0501"}
+power_feeding_ups: [rack-a]
+power_listen: [127.0.0.1, 198.51.100.4]
+power_clients:
+  - {name: db, role: secondary}
+  - {name: web, role: secondary}
+  - {name: nas, role: secondary}
+# Back after a cut: wake db and web once rack-a is charged enough
+power_wake_macs: ["02:00:5e:10:00:31", "02:00:5e:10:00:32"]
+power_wake_ups: rack-a
+power_wake_min_charge: 60
+power_wake_delay_sec: 30
+```
+
+`host_vars/db.yml` — two power supplies, so it follows two UPS:
+
+```yaml
+power_mode: netclient
+power_remote_ups:
+  - {name: rack-a, host: 198.51.100.4, user: db, password_from: pi}
+  - {name: rack-b, host: 198.51.100.4, user: db, password_from: pi}
+```
+
+`host_vars/web.yml` — one supply on `rack-b`; it also watches `office` without ever stopping for it, and leaves after 5 minutes on battery:
+
+```yaml
+power_mode: netclient
+power_remote_ups:
+  - {name: rack-b, host: 198.51.100.4, user: web, password_from: pi}
+  - {name: office, host: 198.51.100.4, user: web, password_from: pi, feeds: false}
+power_shutdown_on: timer
+power_shutdown_after_sec: 300
+```
+
+`host_vars/nas.yml`:
+
+```yaml
+power_mode: netclient
+power_remote_ups:
+  - {name: office, host: 198.51.100.4, user: nas, password_from: pi}
+```
+
+What happens:
+
+| Event | Who stops |
+|-------|-----------|
+| `rack-a` low battery | `pi` and `db`. `pi` powers `rack-a` off afterwards, so everything on it restarts when mains returns |
+| `rack-b` 5 minutes on battery | `web` (its timer) |
+| `rack-b` low battery | `db` and `web` |
+| `office` low battery | `nas` only. `pi` watches `office` as secondary and gives it `sdorder -1`, so its own shutdown never stops or powers off `nas` |
+
+- Every feed is required: `db` stops on the low battery of either of its UPS, never running on one supply alone (see Platform notes).
+- The clients stop themselves through NUT, so `pi` needs no `power_shutdown_targets`. Use those instead for hosts that cannot run NUT (a switch, an appliance with SSH).
+- `password_from: pi` reads each client's password on `pi`, so it never goes through the inventory. Converge `pi` before its clients.
+
 ### Two UPS on one server, a backup box as NUT client
 
 ```yaml
