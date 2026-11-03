@@ -1,5 +1,7 @@
 # {{ ansible_managed }}
-maxretry = 3
+{% for k, v in power_ups_globals.items() %}
+{{ k }} = "{{ v }}"
+{% endfor %}
 {% for u in power_ups %}
 
 [{{ u.name }}]
@@ -8,7 +10,16 @@ maxretry = 3
 {% if u.desc is defined %}
   desc = "{{ u.desc }}"
 {% endif %}
-{% for k, v in (u.options | default({})).items() %}
+{% set opts = u.options | default({}) %}
+{% for k, v in opts.items() %}
+{% if v is sameas true %}
+  {{ k }}
+{% elif v is not sameas false %}
   {{ k }} = "{{ v }}"
+{% endif %}
 {% endfor %}
+{% if power_powerdown and u.name not in power_feeding_ups and 'sdorder' not in opts %}
+  # Watched only: never powered off by this host's shutdown
+  sdorder = "-1"
+{% endif %}
 {% endfor %}

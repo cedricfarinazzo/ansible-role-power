@@ -1,33 +1,69 @@
 ---
 # Generic defaults; host values live in the inventory.
-# The full power cycle of a UPS host: NUT watches the UPS, a low battery on a UPS that feeds this host stops
+# The power cycle of a host on UPS: NUT watches the UPS, a low battery (or a time on battery) stops
 # power_shutdown_targets in order then this host, the next boot wakes power_wake_macs once the battery is charged.
 
+# netserver: the UPS is attached here (drivers, upsd, upsmon); netclient: follow power_remote_ups on other hosts
+power_mode: netserver
+
+# --- netserver ---
 # UPS served by upsd, each {name, driver, port (auto), desc, options: {ups.conf key: value}}; options pick the
-# device (vendorid, productid, bus, busport...) and its behaviour (sdorder: -1 = never powered off by this host)
+# device (vendorid, productid, serial, bus, busport...) and its behaviour (sdorder: -1 = never powered off here)
 power_ups: []
-# UPS that feed this host: their low battery starts the shutdown; the others are watched only
+# UPS that feed this host: any of them starts the shutdown (every feed is required); the others are watched only
 power_feeding_ups: []
 # Addresses upsd listens on (port 3493); empty = upsd's default, localhost only
 power_listen: []
-# NUT network clients, each {name, role: primary|secondary}; a password is generated on the host for each
+# NUT network clients, each {name, role: primary|secondary, password (optional)}; without a password one is
+# generated on the host, in power_secret_dir/<name>
 power_clients: []
-# Directory of the NUT passwords generated on the host (root only)
+# Directory of the NUT passwords on the host (root only)
 power_secret_dir: /etc/nut/secrets
+# Global ups.conf settings, e.g. {pollinterval: 2}
+power_ups_globals:
+  maxretry: 3
+# Extra upsd.conf settings, e.g. {MAXAGE: 25}
+power_upsd_settings: {}
 
-# Shut down in this order on low battery, each {host, port (22), user}, then this host.
+# --- netclient ---
+# UPS on other hosts, each {name, host, port (3493), user, password | password_from, role (secondary), feeds (true)}.
+# password_from: the inventory host running that upsd with this role; its power_secret_dir/<user> is read there.
+# feeds: false = watched only
+power_remote_ups: []
+
+# --- both modes ---
+# Extra upsmon.conf settings, e.g. {DEADTIME: 25, FINALDELAY: 0, HOSTSYNC: 30}
+power_upsmon_settings: {}
+# Start the shutdown on low battery (lowbatt) or after power_shutdown_after_sec on battery (timer, upssched)
+power_shutdown_on: lowbatt
+power_shutdown_after_sec: 600
+# netserver: after the shutdown, power the feeding UPS off (POWERDOWNFLAG), so it powers back on, with this host,
+# when mains returns; a watched-only UPS gets sdorder -1. Ignored on a netclient
+power_killpower: true
+# Command run on each UPS event of power_notify_events (as the nut user), with NOTIFYTYPE and UPSNAME in its
+# environment and the message as $1; empty = none
+power_notify_cmd: ""
+power_notify_events: [ONLINE, ONBATT, LOWBATT, FSD, COMMOK, COMMBAD, SHUTDOWN, REPLBATT, NOCOMM]
+
+# Shut down in this order, each {host, port (22), user (root)}, then this host.
 # Each target's authorized_keys restricts power_key to its shutdown command (command="...")
 power_shutdown_targets: []
 # Seconds to wait for one target to stop answering ping before the next
 power_shutdown_wait_sec: 300
 # Key generated on the host for the shutdown SSH logins
 power_key: /etc/power/id_ed25519
+# How this host stops last
+power_poweroff_cmd: /sbin/shutdown -h +0
 
 # Woken at boot by Wake-on-LAN once power_wake_ups reports battery.charge >= power_wake_min_charge
 power_wake_macs: []
+# A name of power_ups, or of power_remote_ups in netclient mode
 power_wake_ups: ""
-power_wake_min_charge: 50
+# 0 = wake at once, without reading the charge
+power_wake_min_charge: 80
 # Give up waking after this (the failed unit stays visible)
 power_wake_timeout_sec: 3600
+# Seconds between two hosts, so they do not all draw power at once
+power_wake_delay_sec: 0
 # Broadcast address for the magic packets; empty = wakeonlan's default (the limited broadcast)
 power_wake_broadcast: ""

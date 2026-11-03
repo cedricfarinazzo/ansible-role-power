@@ -1,8 +1,9 @@
 #!/bin/sh
 # Fails with a message when a UPS is on battery (OB), on low battery (LB), needs a new battery (RB) or gives no
-# data (COMMBAD); for a monitoring check.
-ups=${1:?usage: nut-check <ups>}
-if ! s=$(upsc "$ups@localhost" ups.status 2>/dev/null); then echo "$ups: no data from the UPS (COMMBAD)"; exit 1; fi
+# data (COMMBAD); for a monitoring check. <ups> is a local UPS name or ups@host[:port].
+ups=${1:?usage: nut-check <ups>|<ups@host[:port]>}
+case $ups in *@*) target=$ups ;; *) target=$ups@localhost ;; esac
+if ! s=$(upsc "$target" ups.status 2>/dev/null); then echo "$ups: no data from the UPS (COMMBAD)"; exit 1; fi
 case " $s " in
   *" OB "* | *" LB "* | *" RB "*) echo "$ups: $s"; exit 1 ;;
 esac

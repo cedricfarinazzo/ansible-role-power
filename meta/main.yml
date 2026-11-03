@@ -3,7 +3,7 @@ galaxy_info:
   role_name: power
   namespace: cedricfarinazzo
   author: Cédric Farinazzo
-  description: UPS power cycle with NUT, ordered shutdown of dependent hosts and Wake-on-LAN after power returns
+  description: UPS power cycle with NUT (server and client), ordered or timed shutdown, Wake-on-LAN after power returns
 
   license: MIT
 

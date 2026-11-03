@@ -1,65 +1,92 @@
 ---
+# One play on the server; client steps are delegated, so the cuts and their effects stay in order.
 - name: Verify
-  hosts: all
+  hosts: server
   gather_facts: false
   tasks:
-    - name: NUT services are running
+    # --- configuration and services ---
+    - name: Server NUT services are running
       ansible.builtin.command: >-
         systemctl is-active nut-server.service nut-monitor.service nut-driver@main.service nut-driver@other.service
       changed_when: false
 
-    - name: Both UPS are served on mains
-      ansible.builtin.command: upsc {{ item }}@localhost ups.status
+    - name: Client runs upsmon only
+      ansible.builtin.shell: |
+        set -o pipefail
+        systemctl is-active nut-monitor.service
+        ! systemctl is-active nut-server.service
+        grep -qx 'MODE=netclient' /etc/nut/nut.conf
+      args:
+        executable: /bin/bash
+      delegate_to: client
+      changed_when: false
+
+    - name: Both UPS are on mains, seen from both hosts
+      ansible.builtin.command: upsc {{ item.ups }} ups.status
       register: power_verify_status
       changed_when: false
       until: power_verify_status.rc == 0 and power_verify_status.stdout == 'OL'
       retries: 15
       delay: 2
-      loop: [main, other]
+      delegate_to: "{{ item.host }}"
+      loop:
+        - {host: server, ups: main@localhost}
+        - {host: server, ups: other@localhost}
+        - {host: client, ups: main@server}
+        - {host: client, ups: other@server}
 
-    - name: nut-check passes on mains
-      ansible.builtin.command: nut-check {{ item }}
+    - name: nut-check passes on mains, by name and by target
+      ansible.builtin.command: nut-check {{ item.ups }}
       changed_when: false
-      loop: [main, other]
+      delegate_to: "{{ item.host }}"
+      loop:
+        - {host: server, ups: main}
+        - {host: client, ups: main@server}
 
-    - name: Read upsmon.conf
+    - name: Read both upsmon.conf
       ansible.builtin.slurp:
         src: /etc/nut/upsmon.conf
       register: power_verify_upsmon
-
-    - name: The feeding UPS is primary, the other secondary with power value 0, SHUTDOWNCMD is power-shutdown
-      ansible.builtin.assert:
-        that:
-          - upsmon is search('(?m)^MONITOR main@localhost 1 upsmon-local \S+ primary$')
-          - upsmon is search('(?m)^MONITOR other@localhost 0 upsmon-local \S+ secondary$')
-          - upsmon is search('(?m)^MINSUPPLIES 1$')
-          - upsmon is search('(?m)^SHUTDOWNCMD "/usr/local/sbin/power-shutdown"$')
-      vars:
-        upsmon: "{{ power_verify_upsmon.content | b64decode }}"
-
-    - name: Read the generated client password and upsd.users
-      ansible.builtin.slurp:
-        src: "{{ item }}"
-      register: power_verify_secrets
-      loop: [/etc/nut/secrets/client, /etc/nut/upsd.users]
+      delegate_to: "{{ item }}"
+      loop: [server, client]
       no_log: true
 
-    - name: The client's password is the generated one
+    - name: Read the generated and supplied passwords
+      ansible.builtin.slurp:
+        src: /etc/nut/secrets/{{ item }}
+      register: power_verify_secret
+      loop: [client, supplied]
+      no_log: true
+
+    - name: upsmon lines, roles, power values and options
       ansible.builtin.assert:
         that:
-          - secret | length == 48
-          - users is search('\[client\]\s+password = ' ~ secret ~ '\s+upsmon secondary')
+          - srv is search('(?m)^MONITOR main@localhost 1 upsmon-local \S+ primary$')
+          - srv is search('(?m)^MONITOR other@localhost 0 upsmon-local \S+ secondary$')
+          - srv is search('(?m)^POWERDOWNFLAG /etc/killpower$')
+          - srv is search('(?m)^NOTIFYCMD /usr/local/sbin/power-notify$')
+          - srv is search('(?m)^NOTIFYFLAG ONBATT SYSLOG\+WALL\+EXEC$')
+          - srv is search('(?m)^DEADTIME 15$')
+          - cli is search('(?m)^MONITOR main@server:3493 1 client ' ~ generated ~ ' secondary$')
+          - cli is search('(?m)^MONITOR other@server:3493 0 supplied molecule-pass secondary$')
+          - cli is not search('POWERDOWNFLAG')
+          - cli is search('(?m)^NOTIFYFLAG ONLINE SYSLOG\+WALL\+EXEC$')
+          - cli is search('(?m)^SHUTDOWNCMD "/usr/local/sbin/power-shutdown"$')
+          - generated | length == 48
+          - supplied == 'molecule-pass'
         quiet: true
       vars:
-        secret: "{{ power_verify_secrets.results[0].content | b64decode | trim }}"
-        users: "{{ power_verify_secrets.results[1].content | b64decode }}"
+        srv: "{{ power_verify_upsmon.results[0].content | b64decode }}"
+        cli: "{{ power_verify_upsmon.results[1].content | b64decode }}"
+        generated: "{{ power_verify_secret.results[0].content | b64decode | trim }}"
+        supplied: "{{ power_verify_secret.results[1].content | b64decode | trim }}"
       no_log: true
 
-    - name: Stat the secret files and the shutdown key
+    - name: Stat the secrets and the shutdown key
       ansible.builtin.stat:
         path: "{{ item }}"
       register: power_verify_modes
-      loop: [/etc/nut/secrets/client, /etc/nut/secrets/upsmon-local, /etc/power/id_ed25519]
+      loop: [/etc/nut/secrets/client, /etc/nut/secrets/supplied, /etc/nut/secrets/upsmon-local, /etc/power/id_ed25519]
 
     - name: Secrets are root only
       ansible.builtin.assert:
@@ -69,45 +96,204 @@
       loop_control:
         label: "{{ item.item }}"
 
-    - name: Wake at the threshold sends the packet
+    - name: Timer mode only on the client (upssched rule)
+      ansible.builtin.stat:
+        path: /etc/sudoers.d/power-upssched
+      register: power_verify_sudoers
+      delegate_to: "{{ item }}"
+      loop: [server, client]
+
+    - name: The upssched rule exists where the timer is on
+      ansible.builtin.assert:
+        that:
+          - not power_verify_sudoers.results[0].stat.exists
+          - power_verify_sudoers.results[1].stat.exists
+
+    - name: Wake at the threshold sends a packet per host
       ansible.builtin.command: /usr/local/sbin/power-wake /etc/power/wake.conf
       register: power_verify_wake
       changed_when: false
-      failed_when: power_verify_wake.rc != 0 or 'waking 02:00:00:00:00:01' not in power_verify_wake.stdout
+      failed_when: >-
+        power_verify_wake.rc != 0 or 'waking 02:00:00:00:00:01 02:00:00:00:00:02' not in power_verify_wake.stdout
 
-    - name: Shutdown with no target stops this host only (poweroff replaced)
-      ansible.builtin.command: /usr/local/sbin/power-shutdown
-      environment:
-        POWER_POWEROFF: "true"
-      register: power_verify_shutdown
+    - name: Read ups.conf
+      ansible.builtin.slurp:
+        src: /etc/nut/ups.conf
+      register: power_verify_upsconf
+
+    - name: The watched-only UPS is never powered off by this host
+      ansible.builtin.assert:
+        that: (power_verify_upsconf.content | b64decode) is search('\[other\][^\[]*sdorder = "-1"')
+
+    # --- timer: back on mains before 15 s cancels; 15 s on battery stops the client, not the server ---
+    - name: Clear earlier markers
+      ansible.builtin.file:
+        path: "{{ item[1] }}"
+        state: absent
+      delegate_to: "{{ item[0] }}"
+      loop: >-
+        {{ ['server', 'client'] | product(['/tmp/powered-off', '/tmp/power-notify.log', '/etc/killpower']) | list }}
+
+    - name: A short cut
+      ansible.builtin.copy:
+        content: |
+          ups.status: OB DISCHRG
+          battery.charge: 60
+        dest: /etc/nut/main.dev
+        mode: "0644"
+
+    - name: Let the client see it
+      ansible.builtin.command: upsc main@server ups.status
+      register: power_verify_short
+      delegate_to: client
       changed_when: false
-      failed_when: power_verify_shutdown.rc != 0 or 'stopping this host' not in power_verify_shutdown.stdout
+      until: "'OB' in power_verify_short.stdout"
+      retries: 10
+      delay: 1
 
-    - name: Simulate a power cut on the watched UPS
+    - name: Mains back within the timer
+      ansible.builtin.copy:
+        content: |
+          ups.status: OL
+          battery.charge: 60
+        dest: /etc/nut/main.dev
+        mode: "0644"
+
+    - name: Wait past the timer
+      ansible.builtin.wait_for:
+        timeout: 25
+
+    - name: Stat the client marker after the short cut
+      ansible.builtin.stat:
+        path: /tmp/powered-off
+      register: power_verify_cancel
+      delegate_to: client
+
+    - name: The return to mains cancelled the timer
+      ansible.builtin.assert:
+        that: not power_verify_cancel.stat.exists
+
+    - name: A long cut
+      ansible.builtin.copy:
+        content: |
+          ups.status: OB DISCHRG
+          battery.charge: 60
+        dest: /etc/nut/main.dev
+        mode: "0644"
+
+    - name: The client stops once its timer runs out
+      ansible.builtin.stat:
+        path: /tmp/powered-off
+      register: power_verify_client_off
+      delegate_to: client
+      until: power_verify_client_off.stat.exists
+      retries: 30
+      delay: 2
+
+    - name: Read the server's notifications and stop state
+      ansible.builtin.shell: |
+        cat /tmp/power-notify.log
+        test ! -e /tmp/powered-off && echo server-up
+      register: power_verify_timer_server
+      changed_when: false
+
+    - name: The server notified ONBATT and ONLINE and kept running (low battery mode)
+      ansible.builtin.assert:
+        that:
+          - "'ONBATT main@localhost' in power_verify_timer_server.stdout"
+          - "'ONLINE main@localhost' in power_verify_timer_server.stdout"
+          - "'server-up' in power_verify_timer_server.stdout"
+
+    - name: Mains back
+      ansible.builtin.copy:
+        content: |
+          ups.status: OL
+          battery.charge: 60
+        dest: /etc/nut/main.dev
+        mode: "0644"
+
+    - name: Restart the client's upsmon (it exits after a shutdown)
+      ansible.builtin.shell: rm -f /tmp/powered-off && systemctl restart nut-monitor.service
+      delegate_to: client
+      changed_when: false
+
+    - name: Wait until the client sees mains again
+      ansible.builtin.command: upsc main@server ups.status
+      register: power_verify_back
+      delegate_to: client
+      changed_when: false
+      until: power_verify_back.stdout == 'OL'
+      retries: 15
+      delay: 2
+
+    # --- FSD alone: on mains, the server forces the shutdown; the client follows the FSD flag ---
+    - name: The server forces the shutdown
+      ansible.builtin.command: upsmon -c fsd
+      changed_when: false
+
+    - name: Both hosts stop, the UPS still on mains
+      ansible.builtin.stat:
+        path: /tmp/powered-off
+      register: power_verify_off
+      delegate_to: "{{ item }}"
+      until: power_verify_off.stat.exists
+      retries: 20
+      delay: 2
+      loop: [server, client]
+
+    - name: Stat the killpower flag
+      ansible.builtin.stat:
+        path: /etc/killpower
+      register: power_verify_killpower
+      delegate_to: "{{ item }}"
+      loop: [server, client]
+
+    - name: Only the server asks to power the UPS off
+      ansible.builtin.assert:
+        that:
+          - power_verify_killpower.results[0].stat.exists
+          - not power_verify_killpower.results[1].stat.exists
+
+    - name: Server and client restarted from a clean state (FSD clears with the drivers)
+      ansible.builtin.shell: |
+        rm -f /tmp/powered-off /etc/killpower
+        systemctl restart nut-driver.target nut-server.service nut-monitor.service
+      changed_when: false
+
+    - name: Client restarted after the FSD
+      ansible.builtin.shell: rm -f /tmp/powered-off && systemctl restart nut-monitor.service
+      delegate_to: client
+      changed_when: false
+
+    # --- low battery: the server stops on its own feeding UPS ---
+    - name: Server upsmon sees mains again
+      ansible.builtin.command: upsc main@localhost ups.status
+      register: power_verify_srv_back
+      changed_when: false
+      until: power_verify_srv_back.stdout == 'OL'
+      retries: 15
+      delay: 2
+
+    - name: Low battery
       ansible.builtin.copy:
         content: |
           ups.status: OB LB
           battery.charge: 5
-        dest: /etc/nut/other.dev
+        dest: /etc/nut/main.dev
         mode: "0644"
 
-    - name: nut-check fails on battery
-      ansible.builtin.command: nut-check other
-      register: power_verify_cut
-      changed_when: false
-      failed_when: false
-      until: power_verify_cut.rc == 1
-      retries: 15
+    - name: The server stops on low battery
+      ansible.builtin.stat:
+        path: /tmp/powered-off
+      register: power_verify_lb
+      until: power_verify_lb.stat.exists
+      retries: 30
       delay: 2
-
-    - name: The failure names the state
-      ansible.builtin.assert:
-        that: "power_verify_cut.stdout == 'other: OB LB'"
 
     - name: Below the threshold the wake waits and gives up
       ansible.builtin.shell: |
         set -o pipefail
-        sed 's/^ups .*/ups other/; s/^timeout .*/timeout 1/' /etc/power/wake.conf > /tmp/wake-low.conf
+        sed 's/^timeout .*/timeout 1/' /etc/power/wake.conf > /tmp/wake-low.conf
         POWER_WAKE_POLL_SEC=0 /usr/local/sbin/power-wake /tmp/wake-low.conf
       args:
         executable: /bin/bash
@@ -115,11 +301,40 @@
       changed_when: false
       failed_when: power_verify_low.rc == 0 or 'not waking' not in power_verify_low.stderr
 
-    # The idempotence run and the second verify start from mains again
-    - name: Back on mains
+    - name: The watched-only UPS fails nut-check on battery
+      ansible.builtin.copy:
+        content: |
+          ups.status: OB LB
+          battery.charge: 5
+        dest: /etc/nut/other.dev
+        mode: "0644"
+
+    - name: nut-check names the state
+      ansible.builtin.command: nut-check other
+      register: power_verify_cut
+      changed_when: false
+      failed_when: false
+      until: "power_verify_cut.rc == 1 and power_verify_cut.stdout == 'other: OB LB'"
+      retries: 15
+      delay: 2
+
+    # --- back to mains for the idempotence run and the second verify ---
+    - name: Both UPS on mains
       ansible.builtin.copy:
         content: |
           ups.status: OL
           battery.charge: 80
-        dest: /etc/nut/other.dev
+        dest: /etc/nut/{{ item }}.dev
         mode: "0644"
+      loop: [main, other]
+
+    - name: Server restarted from a clean state (FSD clears with the drivers)
+      ansible.builtin.shell: |
+        rm -f /tmp/powered-off /etc/killpower
+        systemctl restart nut-driver.target nut-server.service nut-monitor.service
+      changed_when: false
+
+    - name: Client restarted
+      ansible.builtin.shell: rm -f /tmp/powered-off && systemctl restart nut-monitor.service
+      delegate_to: client
+      changed_when: false

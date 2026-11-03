@@ -1,6 +1,8 @@
 # {{ ansible_managed }}
-# wait <seconds> | target <host> <port> <user>, in shutdown order
+# wait <seconds> | key <path> | poweroff <command> | target <host> <port> <user>, in shutdown order
 wait {{ power_shutdown_wait_sec | int }}
+key {{ power_key }}
+poweroff {{ power_poweroff_cmd }}
 {% for t in power_shutdown_targets %}
 target {{ t.host }} {{ t.port | default(22) }} {{ t.user | default('root') }}
 {% endfor %}

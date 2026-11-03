@@ -1,0 +1,5 @@
+# {{ ansible_managed }}
+# timer 0|1 | events <NOTIFYTYPE>... | cmd <shell command>
+timer {{ 1 if power_shutdown_on == 'timer' else 0 }}
+events {{ (power_notify_events if power_notify_cmd | length > 0 else []) | join(' ') }}
+cmd {{ power_notify_cmd }}

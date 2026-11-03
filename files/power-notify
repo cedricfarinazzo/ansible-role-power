@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# upsmon's NOTIFYCMD (runs as the nut user): hands ONBATT/ONLINE to upssched in timer mode, and runs the
+# configured command on the configured events, with NOTIFYTYPE and UPSNAME set and the message as $1.
+set -uo pipefail
+
+conf=${POWER_NOTIFY_CONF:-/etc/nut/power-notify.conf}
+timer=0 events="" cmd=""
+while read -r k v; do
+  case $k in timer) timer=$v ;; events) events=$v ;; cmd) cmd=$v ;; esac
+done < <(grep -v '^#' "$conf")
+
+type=${NOTIFYTYPE:-}
+status=0
+if [[ $timer == 1 && ( $type == ONBATT || $type == ONLINE ) ]]; then
+  ${POWER_UPSSCHED:-upssched} "$@" || status=1
+fi
+if [[ -n $cmd && " $events " == *" $type "* ]]; then
+  bash -c "$cmd" power-notify "${1:-}" || status=1
+fi
+exit "$status"

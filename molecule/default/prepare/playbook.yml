@@ -8,13 +8,17 @@
         update_cache: true
         cache_valid_time: 3600
 
+- name: Simulated UPS
+  hosts: server
+  gather_facts: false
+  tasks:
     - name: Directory for the simulated UPS
       ansible.builtin.file:
         path: /etc/nut
         state: directory
         mode: "0755"
 
-    # dummy-ups replays these files; verify.yml edits them to simulate a power cut
+    # dummy-ups replays these files; verify.yml edits them to simulate power cuts
     - name: Simulated UPS on mains
       ansible.builtin.copy:
         content: |

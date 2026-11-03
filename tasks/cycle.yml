@@ -1,9 +1,11 @@
 ---
-# Ordered shutdown (NUT's SHUTDOWNCMD) and the wake at boot.
-# wakeonlan looks up "udp" in /etc/protocols (netbase): without it, minimal images fail to send
-- name: Install wakeonlan
+# Ordered shutdown (NUT's SHUTDOWNCMD), the event hook and the wake at boot.
+# wakeonlan looks up "udp" in /etc/protocols (netbase); power-shutdown calls ssh and ping; timer mode, sudo
+- name: Install what the scripts call
   ansible.builtin.apt:
-    name: [wakeonlan, netbase]
+    name: >-
+      {{ ['wakeonlan', 'netbase', 'openssh-client', 'iputils-ping']
+      + (['sudo'] if power_shutdown_on == 'timer' else []) }}
     state: present
 
 - name: Directory for the power settings
@@ -23,30 +25,35 @@
     owner: root
     group: root
     mode: "0600"
+  # Check mode on a first run: /etc/power is not there yet
+  ignore_errors: "{{ ansible_check_mode }}"
 
-- name: Settings and scripts
+- name: Settings and units
   ansible.builtin.template:
-    src: "{{ item.src }}"
-    dest: "{{ item.dest }}"
+    src: "{{ power_tpl.src }}"
+    dest: "{{ power_tpl.dest }}"
     owner: root
     group: root
-    mode: "{{ item.mode }}"
+    mode: "{{ power_tpl.mode }}"
   loop:
     - {src: shutdown.conf.j2, dest: /etc/power/shutdown.conf, mode: "0600"}
     - {src: wake.conf.j2, dest: /etc/power/wake.conf, mode: "0600"}
     - {src: power-wake.service.j2, dest: /etc/systemd/system/power-wake.service, mode: "0644"}
   loop_control:
-    label: "{{ item.dest }}"
+    loop_var: power_tpl
+    label: "{{ power_tpl.dest }}"
   notify: Reload systemd
 
 - name: Install the scripts
   ansible.builtin.copy:
-    src: "{{ item }}"
-    dest: /usr/local/sbin/{{ item }}
+    src: "{{ power_script }}"
+    dest: /usr/local/sbin/{{ power_script }}
     owner: root
     group: root
     mode: "0755"
-  loop: [power-shutdown, power-wake]
+  loop: [power-shutdown, power-wake, power-notify, power-upssched]
+  loop_control:
+    loop_var: power_script
 
 - name: Flush handlers before enabling the wake unit
   ansible.builtin.meta: flush_handlers

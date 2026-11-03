@@ -49,6 +49,6 @@ exclude_paths:
   - .cache/  # implicit unless exclude_paths is defined in config
   - .github/
   - molecule/
-  - tests/  # roles path set by tests/migration/run.sh
+  - tests/
   - .venv/
   - node_modules/

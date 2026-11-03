@@ -4,17 +4,18 @@ Orientation for Claude Code sessions in this repository. `AGENTS.md` is a symlin
 
 ## Purpose
 
-Public Ansible role `cedricfarinazzo.power` (Ansible Galaxy): the power cycle of a host on UPS. NUT watches the UPS; a feeding UPS's low battery stops dependent hosts in order over SSH, then this host; the next boot wakes them by Wake-on-LAN above a battery threshold. Generic by design: no reference to any downstream project, host, user or network in code, defaults, docs or commit messages.
+Public Ansible role `cedricfarinazzo.power` (Ansible Galaxy): the power cycle of hosts on UPS, on the UPS host (`netserver`) and on the hosts following it (`netclient`). NUT watches the UPS; a feeding UPS's low battery (or a time on battery) stops dependent hosts in order over SSH, then this host; the next boot wakes them by Wake-on-LAN above a battery threshold. Generic by design: no reference to any downstream project, host, user or network in code, defaults, docs or commit messages.
 
 ## Layout
 
 - `defaults/main.yml` — every user-facing variable (`power_*`), with its generic default.
-- `tasks/main.yml` — `validate.yml` (every input asserted before any change), then `cycle.yml` (wakeonlan, shutdown key, `/etc/power` settings, scripts, wake unit), then `nut.yml` (packages, passwords generated on the host, NUT config, `nut-check`, upsd drop-in, services). The scripts come first so upsmon starts with a `SHUTDOWNCMD` that exists.
-- `templates/` — NUT files (`nut.conf`, `ups.conf`, `upsd.conf`, `upsd.users`, `upsmon.conf`), `shutdown.conf`, `wake.conf`, `power-wake.service`.
-- `files/` — `power-shutdown` (upsmon's `SHUTDOWNCMD`), `power-wake` (boot unit), `nut-check` (monitoring check).
+- `vars/main.yml` — internal values: NUT event names, upsmon keys the role owns, `power_monitors` (each watched UPS as upsmon sees it, for both modes), the notify flags.
+- `tasks/main.yml` — `validate.yml` (every input asserted before any change), then `cycle.yml` (wakeonlan, shutdown key, `/etc/power` settings, scripts, wake unit), then `nut.yml` (packages per mode; server passwords generated or supplied; client passwords read on their server with `delegate_to`; NUT config; the upssched sudoers rule in timer mode; upsd drop-in; `nut-check`; a netclient stops a leftover upsd and drivers; services per mode). The scripts come first so upsmon starts with a `SHUTDOWNCMD` that exists.
+- `templates/` — NUT files (`nut.conf`, `ups.conf`, `upsd.conf`, `upsd.users`, `upsmon.conf`, `upssched.conf`, `power-notify.conf`), `shutdown.conf`, `wake.conf`, `power-wake.service`.
+- `files/` — `power-shutdown` (upsmon's `SHUTDOWNCMD`), `power-wake` (boot unit), `power-notify` (upsmon's `NOTIFYCMD`: upssched in timer mode, the user's command), `power-upssched` (upssched's `CMDSCRIPT`: `upsmon -c fsd`), `nut-check` (monitoring check).
 - `handlers/main.yml` — daemon-reload, then the NUT restart chain (driver enumerator → driver target → upsd → upsmon).
 - `meta/main.yml` — Galaxy metadata; `platforms` lists exactly what CI tests.
-- `molecule/default/` — the one Molecule scenario (docker driver, `geerlingguy/docker-<distro>-ansible` images) with two `dummy-ups` UPS; `prepare/` writes their `.dev` files, `verify/` checks services, config, secrets, a simulated cut and the wake; `collections.yml` holds test-only collections.
+- `molecule/default/` — the one Molecule scenario (docker driver, `geerlingguy/docker-<distro>-ansible` images, one network): `server` with two `dummy-ups` UPS, `client` in `netclient` timer mode. `prepare/` writes the `.dev` files; `converge/` runs the server first (the client reads its password there); `verify/` (one play on the server, client steps delegated) checks both configs, secrets, the added `sdorder`, the wake, a short cut (timer cancelled), a long cut (client stops, server notifies and stays up), `upsmon -c fsd` on the server with mains on (FSD alone stops the client), a low battery (server stops), then restores mains and restarts NUT; the sequence runs `check` on fresh containers before `converge`; `collections.yml` holds test-only collections.
 - `tests/scripts.test.sh` — the scripts with every external command stubbed on `PATH`; `tests/validate.test.sh` — good and bad inputs against `tasks/validate.yml` on localhost.
 - `run-tests.sh` / `Makefile` — local Molecule entry points; `run-tests.sh <distro>`.
 - `requirements.yml` — collections the role needs at runtime (consumer-facing ranges).
@@ -26,11 +27,13 @@ Public Ansible role `cedricfarinazzo.power` (Ansible Galaxy): the power cycle of
 ## Conventions
 
 - **Conventional Commits** (`conventionalcommits` preset, so a `!` after the type is breaking). `feat:` → minor, `fix:` / `perf:` → patch, `!` or a `BREAKING CHANGE:` footer → major; `docs:` / `ci:` / `chore:` / `test:` / `refactor:` / `build:` release nothing. A squash merge lands the **PR title** (`pr-title.yml` checks it).
-- **Breaking = a consumer must act.** Dropping a platform, renaming or removing a variable, changing a default that changes which UPS stops this host, which hosts are stopped or woken, or which addresses upsd serves.
+- **Breaking = a consumer must act.** Dropping a platform, renaming or removing a variable, changing a default that changes which UPS stops this host, when it stops (`power_shutdown_on`), which hosts are stopped or woken, whether the UPS is powered off, or which addresses upsd serves.
 - **Tags are bare semver** (`1.2.3`, no `v`, `tagFormat` in `.releaserc.json`). Release notes live in GitHub Releases; no `CHANGELOG.md`, no release commit.
 - **No ruleset or branch protection on `main`:** a ruleset blocks semantic-release. Changes still go through a PR with green CI, by discipline.
 - **Variables:** every user-facing variable starts with `power_`, is defined in `defaults/main.yml`, asserted in `tasks/validate.yml` (with a case in `tests/validate.test.sh`) and documented in `README.md` in the same PR. Internal values (registered results, computed task vars) start with `power_` too (ansible-lint `var-naming[no-role-prefix]`).
-- **No secret leaves the host:** NUT passwords and the shutdown key are generated on the host (`creates:` / `openssh_keypair`), read with `no_log`; the role never takes a password as a variable.
+- **Secrets stay on their hosts:** NUT passwords are generated on the server (`creates:`) unless supplied, a client reads its password on the server (`password_from`, `delegate_to`), every task touching one has `no_log`; the shutdown key is generated on the host (`openssh_keypair`).
+- **Today's behaviour is the default:** a new option defaults to what the role did before it (lowbatt, killpower, no notify, no delay), so adding one is a `feat:`, not a breaking change.
+- **Examples never copy a real deployment:** README and Molecule values use documentation addresses (198.51.100.0/24, 192.0.2.0/24), locally administered MACs (`02:...`) and made-up names.
 - **Every input is asserted before any change:** a wrong type would render a different, valid NUT config.
 - **Scripts never stop the sequence on one failure:** `power-shutdown` logs a target's failure and goes on, then stops this host.
 - **GitHub Actions pinned by full commit SHA**, tag in a trailing comment. Resolve with `gh api repos/<owner>/<repo>/git/refs/tags/<tag> --jq .object.sha`.
@@ -69,9 +72,15 @@ Public Ansible role `cedricfarinazzo.power` (Ansible Galaxy): the power cycle of
 - `busport` is the libusb port on the parent hub, formatted `%03d` (NUT 2.8.1 `drivers/libusb1.c`); NUT 2.8.0 drivers refuse it as an unknown variable.
 - upsd binds each `LISTEN` address at start: `nut-server` waits for `network-online.target` (drop-in), or a reboot before DHCP leaves an address unbound.
 - A Jinja string literal (inside `{{ }}`, a `when` or an `assert`) unescapes backslashes again: YAML `'[^\s"\\]'` reaches the regex as `[^\s"\]`, an unterminated class. Use an allow-list class without backslashes.
+- `service_facts` also lists units another unit merely references, with status `not-found` (a netclient shows `nut-server.service`): test the status, not the key.
+- upssched runs `CMDSCRIPT <timer name>`: the timers are `onbatt-<ups>`, so `power-upssched` matches `onbatt-*`. A test that calls the script with a name the template never renders passes for the wrong reason.
+- Check mode on a fresh host: packages, `/etc/power` and the nut group do not exist yet. Tasks that need them carry `ignore_errors: "{{ ansible_check_mode }}"` or `when: not ansible_check_mode` (handlers included); Molecule's `check` step proves it.
 - `dummy-ups` reads `/etc/nut/<port>` and rereads it when it changes: the Molecule verify edits it to simulate a cut, then restores it.
+- `upsmon -c fsd` fails from upssched's `CMDSCRIPT`: the script runs as the nut user and the PID file belongs to the root upsmon process (written before it drops privileges, `clients/upsmon.c`). Timer mode installs `sudo` and a sudoers rule for that one command.
+- upsmon exits after `SHUTDOWNCMD`, and upsd keeps FSD until the driver restarts: after a simulated cut, restart `nut-driver.target`, `nut-server` and `nut-monitor`.
+- Molecule expands `$VAR` inside `molecule.yml` (empty if unset): a shell variable meant for the role is written `$$VAR` there.
 - `wakeonlan` fails with 'send : Invalid argument' and `$proto` uninitialized when `/etc/protocols` is missing (minimal images, e.g. the Debian 12 container): the role installs `netbase` with it.
-- Molecule's docker connection: `wakeonlan` broadcasts from the container harmlessly; `power-shutdown` is run with `POWER_POWEROFF=true` so it never stops the container.
+- Molecule's docker connection: `wakeonlan` broadcasts from the container harmlessly; `power_poweroff_cmd: touch /tmp/powered-off` (`molecule.yml`) so a shutdown never stops a container.
 
 ## Self Improvement Loop
 

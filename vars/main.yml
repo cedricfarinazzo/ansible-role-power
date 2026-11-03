@@ -1,0 +1,38 @@
+---
+# Internal values; user-facing settings are in defaults/main.yml.
+# upsmon events (upsmon.conf NOTIFYFLAG) known to NUT 2.8.0, the oldest supported
+power_nut_events: [ONLINE, ONBATT, LOWBATT, FSD, COMMOK, COMMBAD, SHUTDOWN, REPLBATT, NOCOMM, NOPARENT, CAL]
+# upsmon.conf keys the role writes itself
+power_upsmon_owned: [MONITOR, MINSUPPLIES, SHUTDOWNCMD, POWERDOWNFLAG, NOTIFYCMD, NOTIFYFLAG]
+# Names power_wake_ups may take
+power_watched_names: >-
+  {{ (power_ups if power_mode == 'netserver' else power_remote_ups) | map(attribute='name') | list }}
+# Each watched UPS as upsmon sees it: {name, target (ups@host[:port]), feeds, role, user}.
+# A UPS that does not feed this host is always secondary: a primary that shuts down sets FSD on every UPS it
+# is primary of, which would stop that UPS's other clients.
+power_monitors: >-
+  {%- set out = [] -%}
+  {%- if power_mode == 'netserver' -%}
+  {%- for u in power_ups -%}
+  {%- set f = u.name in power_feeding_ups -%}
+  {%- set _ = out.append({'name': u.name, 'target': u.name ~ '@localhost', 'feeds': f,
+      'role': 'primary' if f else 'secondary', 'user': 'upsmon-local'}) -%}
+  {%- endfor -%}
+  {%- else -%}
+  {%- for u in power_remote_ups -%}
+  {%- set f = u.feeds | default(true) -%}
+  {%- set _ = out.append({'name': u.name, 'target': u.name ~ '@' ~ u.host ~ ':' ~ (u.port | default(3493)),
+      'feeds': f, 'role': u.role | default('secondary') if f else 'secondary', 'user': u.user}) -%}
+  {%- endfor -%}
+  {%- endif -%}
+  {{ out }}
+power_feeds: "{{ power_monitors | selectattr('feeds') | list }}"
+# The shutdown timer and the notify command both need upsmon to run power-notify
+power_notify_needed: "{{ power_shutdown_on == 'timer' or power_notify_cmd | length > 0 }}"
+power_notify_flags: >-
+  {{ ((power_notify_events if power_notify_cmd | length > 0 else [])
+  + (['ONBATT', 'ONLINE'] if power_shutdown_on == 'timer' else [])) | unique }}
+# killpower is a server action: only a netserver with a feeding UPS powers it off
+power_powerdown: "{{ power_killpower and power_mode == 'netserver' and power_feeds | length > 0 }}"
+# Absolute path without spaces or shell metacharacters
+power_path_re: '^/[A-Za-z0-9_./-]+$'

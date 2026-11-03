@@ -1,0 +1,9 @@
+#!/bin/sh
+# upssched's CMDSCRIPT (timer mode): onbatt-<ups> ran out (a feeding UPS on battery that long), so force the
+# shutdown as on a low battery.
+case $1 in
+  onbatt-*)
+    logger -t power-upssched "on battery past the timer: forcing the shutdown"
+    exec sudo -n /usr/sbin/upsmon -c fsd
+    ;;
+esac

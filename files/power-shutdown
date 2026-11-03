@@ -1,28 +1,38 @@
 #!/usr/bin/env bash
-# NUT SHUTDOWNCMD on low battery: stops each target in order over SSH (the key's forced command
-# does the shutdown), waits until it stops answering ping, then stops this host. Never aborts on one target.
+# NUT SHUTDOWNCMD: stops each target in order over SSH (the key's forced command does the shutdown), waits until
+# it stops answering ping, then stops this host. Never aborts on one target. When ping cannot tell (no ping
+# binary, ICMP filtered: exit code other than 0 or 1), it waits the full time rather than assume the target is down.
 set -uo pipefail
 
 conf=${POWER_SHUTDOWN_CONF:-/etc/power/shutdown.conf}
-key=${POWER_KEY:-/etc/power/id_ed25519}
-wait_sec=300
+key=/etc/power/id_ed25519
+wait_sec=300 poweroff="/sbin/shutdown -h +0"
 log() { logger -t power-shutdown -- "$*"; echo "$*"; }
 
-while read -r kind a b c; do
+while read -r kind rest; do
   case $kind in
-    wait) wait_sec=$a ;;
+    wait) wait_sec=$rest ;;
+    key) key=${POWER_KEY:-$rest} ;;
+    poweroff) poweroff=$rest ;;
     target)
-      log "stopping $a"
+      read -r host port user <<< "$rest"
+      log "stopping $host"
       # accept-new: a target's first key is learnt here; a changed key still refuses
-      ssh -n -i "$key" -p "$b" -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
-        -o UserKnownHostsFile=/etc/power/known_hosts "$c@$a" || log "$a: ssh failed, waiting anyway"
+      ssh -n -i "$key" -p "$port" -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
+        -o UserKnownHostsFile=/etc/power/known_hosts "$user@$host" || log "$host: ssh failed, waiting anyway"
       end=$((SECONDS + wait_sec))
-      while ping -c 1 -W 2 "$a" > /dev/null 2>&1; do
-        if (( SECONDS >= end )); then log "$a: still up after ${wait_sec}s, going on"; break; fi
-        sleep 5
+      while :; do
+        ping -c 1 -W 2 "$host" > /dev/null 2>&1
+        rc=$?
+        if (( rc == 1 )); then log "$host: down"; break; fi
+        if (( SECONDS >= end )); then
+          if (( rc == 0 )); then log "$host: still up after ${wait_sec}s, going on"; else log "$host: ping cannot tell (exit $rc), waited ${wait_sec}s"; fi
+          break
+        fi
+        sleep "${POWER_SHUTDOWN_POLL_SEC:-5}"
       done
       ;;
   esac
 done < <(grep -v '^#' "$conf")
 log "stopping this host"
-exec ${POWER_POWEROFF:-/sbin/shutdown -h +0}
+exec bash -c "${POWER_POWEROFF:-$poweroff}"
