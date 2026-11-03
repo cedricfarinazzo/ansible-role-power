@@ -1,0 +1,6 @@
+# {{ ansible_managed }}
+# wait <seconds> | target <host> <port> <user>, in shutdown order
+wait {{ power_shutdown_wait_sec | int }}
+{% for t in power_shutdown_targets %}
+target {{ t.host }} {{ t.port | default(22) }} {{ t.user | default('root') }}
+{% endfor %}

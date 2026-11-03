@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+[upsmon-local]
+  password = {{ power_nut_password['upsmon-local'] | default('') }}
+  upsmon primary
+{% for u in power_clients %}
+
+[{{ u.name }}]
+  password = {{ power_nut_password[u.name] | default('') }}
+  upsmon {{ u.role }}
+{% endfor %}

@@ -1,0 +1,51 @@
+---
+dependency:
+  name: galaxy
+driver:
+  name: docker
+platforms:
+  - name: instance
+    hostname: molecule
+    image: "geerlingguy/docker-${MOLECULE_DISTRO:-debian13}-ansible:latest"
+    command: ${MOLECULE_DOCKER_COMMAND:-""}
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    cgroupns_mode: host
+    privileged: true
+    pre_build_image: true
+provisioner:
+  name: ansible
+  playbooks:
+    prepare: prepare/playbook.yml
+    converge: converge/playbook.yml
+    verify: verify/playbook.yml
+  inventory:
+    host_vars:
+      instance:
+        # The container runs as root
+        ansible_become: false
+        # Two simulated UPS (NUT dummy-ups reads /etc/nut/<port>): "main" feeds the host, "other" is watched only
+        power_ups:
+          - {name: main, driver: dummy-ups, port: main.dev, desc: Feeds this host}
+          - {name: other, driver: dummy-ups, port: other.dev, options: {sdorder: "-1"}}
+        power_feeding_ups: [main]
+        power_listen: [127.0.0.1]
+        power_clients:
+          - {name: client, role: secondary}
+        power_wake_macs: ["02:00:00:00:00:01"]
+        power_wake_ups: main
+        power_wake_min_charge: 50
+verifier:
+  name: ansible
+scenario:
+  name: default
+  test_sequence:
+    - dependency
+    - destroy
+    - create
+    - prepare
+    - converge
+    - verify
+    - idempotence
+    - verify
+    - destroy

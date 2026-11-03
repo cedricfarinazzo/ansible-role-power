@@ -1,0 +1,9 @@
+# {{ ansible_managed }}
+# ups <name> | charge <min %> | timeout <seconds> | broadcast <address> | mac <address>
+ups {{ power_wake_ups }}
+charge {{ power_wake_min_charge | int }}
+timeout {{ power_wake_timeout_sec | int }}
+broadcast {{ power_wake_broadcast }}
+{% for m in power_wake_macs %}
+mac {{ m }}
+{% endfor %}

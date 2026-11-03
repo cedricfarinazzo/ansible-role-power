@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Wake the hosts once the UPS battery is charged enough
+Wants=network-online.target nut-server.service
+After=network-online.target nut-server.service
+
+[Service]
+Type=exec
+ExecStart=/usr/local/sbin/power-wake /etc/power/wake.conf
+
+[Install]
+WantedBy=multi-user.target

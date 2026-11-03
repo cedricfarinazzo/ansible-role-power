@@ -1,0 +1,125 @@
+---
+- name: Verify
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: NUT services are running
+      ansible.builtin.command: >-
+        systemctl is-active nut-server.service nut-monitor.service nut-driver@main.service nut-driver@other.service
+      changed_when: false
+
+    - name: Both UPS are served on mains
+      ansible.builtin.command: upsc {{ item }}@localhost ups.status
+      register: power_verify_status
+      changed_when: false
+      until: power_verify_status.rc == 0 and power_verify_status.stdout == 'OL'
+      retries: 15
+      delay: 2
+      loop: [main, other]
+
+    - name: nut-check passes on mains
+      ansible.builtin.command: nut-check {{ item }}
+      changed_when: false
+      loop: [main, other]
+
+    - name: Read upsmon.conf
+      ansible.builtin.slurp:
+        src: /etc/nut/upsmon.conf
+      register: power_verify_upsmon
+
+    - name: The feeding UPS is primary, the other secondary with power value 0, SHUTDOWNCMD is power-shutdown
+      ansible.builtin.assert:
+        that:
+          - upsmon is search('(?m)^MONITOR main@localhost 1 upsmon-local \S+ primary$')
+          - upsmon is search('(?m)^MONITOR other@localhost 0 upsmon-local \S+ secondary$')
+          - upsmon is search('(?m)^MINSUPPLIES 1$')
+          - upsmon is search('(?m)^SHUTDOWNCMD "/usr/local/sbin/power-shutdown"$')
+      vars:
+        upsmon: "{{ power_verify_upsmon.content | b64decode }}"
+
+    - name: Read the generated client password and upsd.users
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      register: power_verify_secrets
+      loop: [/etc/nut/secrets/client, /etc/nut/upsd.users]
+      no_log: true
+
+    - name: The client's password is the generated one
+      ansible.builtin.assert:
+        that:
+          - secret | length == 48
+          - users is search('\[client\]\s+password = ' ~ secret ~ '\s+upsmon secondary')
+        quiet: true
+      vars:
+        secret: "{{ power_verify_secrets.results[0].content | b64decode | trim }}"
+        users: "{{ power_verify_secrets.results[1].content | b64decode }}"
+      no_log: true
+
+    - name: Stat the secret files and the shutdown key
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: power_verify_modes
+      loop: [/etc/nut/secrets/client, /etc/nut/secrets/upsmon-local, /etc/power/id_ed25519]
+
+    - name: Secrets are root only
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists and item.stat.mode == '0600' and item.stat.pw_name == 'root'
+      loop: "{{ power_verify_modes.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Wake at the threshold sends the packet
+      ansible.builtin.command: /usr/local/sbin/power-wake /etc/power/wake.conf
+      register: power_verify_wake
+      changed_when: false
+      failed_when: power_verify_wake.rc != 0 or 'waking 02:00:00:00:00:01' not in power_verify_wake.stdout
+
+    - name: Shutdown with no target stops this host only (poweroff replaced)
+      ansible.builtin.command: /usr/local/sbin/power-shutdown
+      environment:
+        POWER_POWEROFF: "true"
+      register: power_verify_shutdown
+      changed_when: false
+      failed_when: power_verify_shutdown.rc != 0 or 'stopping this host' not in power_verify_shutdown.stdout
+
+    - name: Simulate a power cut on the watched UPS
+      ansible.builtin.copy:
+        content: |
+          ups.status: OB LB
+          battery.charge: 5
+        dest: /etc/nut/other.dev
+        mode: "0644"
+
+    - name: nut-check fails on battery
+      ansible.builtin.command: nut-check other
+      register: power_verify_cut
+      changed_when: false
+      failed_when: false
+      until: power_verify_cut.rc == 1
+      retries: 15
+      delay: 2
+
+    - name: The failure names the state
+      ansible.builtin.assert:
+        that: "power_verify_cut.stdout == 'other: OB LB'"
+
+    - name: Below the threshold the wake waits and gives up
+      ansible.builtin.shell: |
+        set -o pipefail
+        sed 's/^ups .*/ups other/; s/^timeout .*/timeout 1/' /etc/power/wake.conf > /tmp/wake-low.conf
+        POWER_WAKE_POLL_SEC=0 /usr/local/sbin/power-wake /tmp/wake-low.conf
+      args:
+        executable: /bin/bash
+      register: power_verify_low
+      changed_when: false
+      failed_when: power_verify_low.rc == 0 or 'not waking' not in power_verify_low.stderr
+
+    # The idempotence run and the second verify start from mains again
+    - name: Back on mains
+      ansible.builtin.copy:
+        content: |
+          ups.status: OL
+          battery.charge: 80
+        dest: /etc/nut/other.dev
+        mode: "0644"

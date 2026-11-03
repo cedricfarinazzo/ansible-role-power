@@ -1,0 +1,33 @@
+---
+# Generic defaults; host values live in the inventory.
+# The full power cycle of a UPS host: NUT watches the UPS, a low battery on a UPS that feeds this host stops
+# power_shutdown_targets in order then this host, the next boot wakes power_wake_macs once the battery is charged.
+
+# UPS served by upsd, each {name, driver, port (auto), desc, options: {ups.conf key: value}}; options pick the
+# device (vendorid, productid, bus, busport...) and its behaviour (sdorder: -1 = never powered off by this host)
+power_ups: []
+# UPS that feed this host: their low battery starts the shutdown; the others are watched only
+power_feeding_ups: []
+# Addresses upsd listens on (port 3493); empty = upsd's default, localhost only
+power_listen: []
+# NUT network clients, each {name, role: primary|secondary}; a password is generated on the host for each
+power_clients: []
+# Directory of the NUT passwords generated on the host (root only)
+power_secret_dir: /etc/nut/secrets
+
+# Shut down in this order on low battery, each {host, port (22), user}, then this host.
+# Each target's authorized_keys restricts power_key to its shutdown command (command="...")
+power_shutdown_targets: []
+# Seconds to wait for one target to stop answering ping before the next
+power_shutdown_wait_sec: 300
+# Key generated on the host for the shutdown SSH logins
+power_key: /etc/power/id_ed25519
+
+# Woken at boot by Wake-on-LAN once power_wake_ups reports battery.charge >= power_wake_min_charge
+power_wake_macs: []
+power_wake_ups: ""
+power_wake_min_charge: 50
+# Give up waking after this (the failed unit stays visible)
+power_wake_timeout_sec: 3600
+# Broadcast address for the magic packets; empty = wakeonlan's default (the limited broadcast)
+power_wake_broadcast: ""

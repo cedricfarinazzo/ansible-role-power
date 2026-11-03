@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# At boot: waits until the UPS charge reaches the threshold, then wakes every MAC by Wake-on-LAN.
+# Hosts already up ignore the packet. No MAC = nothing to do.
+set -uo pipefail
+
+conf=${1:?usage: power-wake <wake.conf>}
+ups="" charge=50 timeout=3600 bcast="" macs=()
+while read -r k v; do
+  case $k in
+    ups) ups=$v ;; charge) charge=$v ;; timeout) timeout=$v ;; broadcast) bcast=$v ;; mac) macs+=("$v") ;;
+  esac
+done < <(grep -v '^#' "$conf")
+if (( ${#macs[@]} == 0 )); then echo "no host to wake"; exit 0; fi
+
+end=$((SECONDS + timeout))
+while :; do
+  now=$(upsc "$ups@localhost" battery.charge 2>/dev/null) || now=""
+  now=${now%%.*}
+  if [[ $now =~ ^[0-9]+$ ]] && (( now >= charge )); then break; fi
+  if (( SECONDS >= end )); then echo "battery ${now:-unknown}% below ${charge}% after ${timeout}s: not waking" >&2; exit 1; fi
+  sleep "${POWER_WAKE_POLL_SEC:-30}"
+done
+echo "battery ${now}% >= ${charge}%: waking ${macs[*]}"
+args=()
+if [[ -n $bcast ]]; then args=(-i "$bcast"); fi
+wakeonlan "${args[@]}" "${macs[@]}"

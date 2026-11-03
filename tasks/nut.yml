@@ -1,0 +1,90 @@
+---
+# NUT watches the UPS; upsmon runs power-shutdown on the low battery of a UPS that feeds this host.
+- name: Install NUT
+  ansible.builtin.apt:
+    name: [nut-server, nut-client]
+    state: present
+
+- name: Directory for the generated passwords
+  ansible.builtin.file:
+    path: "{{ power_secret_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+# Generated on the host, never in a repository; upsmon-local is upsmon's own login to upsd.
+- name: Generate a password per NUT user
+  ansible.builtin.shell: >-
+    umask 077 && python3 -c 'import secrets; print(secrets.token_hex(24))' > {{ power_secret_dir }}/{{ item }}
+  args:
+    creates: "{{ power_secret_dir }}/{{ item }}"
+  loop: "{{ ['upsmon-local'] + power_clients | map(attribute='name') | list }}"
+
+# Check mode on a first run has no file yet: the templates below then show the change without a value.
+- name: Read the passwords
+  ansible.builtin.slurp:
+    src: "{{ power_secret_dir }}/{{ item }}"
+  loop: "{{ ['upsmon-local'] + power_clients | map(attribute='name') | list }}"
+  register: power_nut_secrets
+  no_log: true
+  ignore_errors: "{{ ansible_check_mode }}"
+
+- name: Configure NUT
+  ansible.builtin.template:
+    src: "{{ item.file }}.j2"
+    dest: /etc/nut/{{ item.file }}
+    owner: root
+    group: nut
+    mode: "0640"
+  loop:
+    - {file: nut.conf, handler: Restart upsd}
+    - {file: ups.conf, handler: Restart NUT drivers}
+    - {file: upsd.conf, handler: Restart upsd}
+    - {file: upsd.users, handler: Restart upsd}
+    - {file: upsmon.conf, handler: Restart upsmon}
+  loop_control:
+    label: "{{ item.file }}"
+  vars:
+    power_nut_password: "{{ dict(power_nut_secrets.results | selectattr('content', 'defined')
+      | map(attribute='item') | zip(power_nut_secrets.results | selectattr('content', 'defined')
+      | map(attribute='content') | map('b64decode') | map('trim'))) }}"
+  notify: "{{ item.handler }}"
+  no_log: true
+
+# upsd binds each LISTEN address at start: after a reboot it must wait for the network's addresses.
+- name: Directory for the upsd drop-in
+  ansible.builtin.file:
+    path: /etc/systemd/system/nut-server.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Start upsd once the network is online
+  ansible.builtin.copy:
+    content: |
+      [Unit]
+      Wants=network-online.target
+      After=network-online.target
+    dest: /etc/systemd/system/nut-server.service.d/50-network-online.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Install nut-check (UPS status for the alert checks)
+  ansible.builtin.copy:
+    src: nut-check
+    dest: /usr/local/bin/nut-check
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: NUT services enabled and running
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop: [nut-driver.target, nut-server.service, nut-monitor.service]
+  when: not ansible_check_mode

@@ -1,0 +1,20 @@
+{
+  "name": "ansible-role-power",
+  "private": true,
+  "version": "0.0.0-semantic-release",
+  "description": "Ansible role for the power cycle of a host on UPS: NUT, ordered shutdown, Wake-on-LAN",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cedricfarinazzo/ansible-role-power.git"
+  },
+  "license": "MIT",
+  "author": "Cédric Farinazzo",
+  "packageManager": "bun@1.4.4",
+  "devDependencies": {
+    "@semantic-release/commit-analyzer": "13.0.1",
+    "@semantic-release/github": "12.0.10",
+    "@semantic-release/release-notes-generator": "14.1.1",
+    "conventional-changelog-conventionalcommits": "9.3.1",
+    "semantic-release": "25.0.9"
+  }
+}

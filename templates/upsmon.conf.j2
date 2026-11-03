@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+# A UPS that feeds this host: power value 1, primary; its low battery runs SHUTDOWNCMD.
+# Any other: power value 0, secondary, because a shutting-down primary sets FSD on every UPS it is primary of,
+# which would stop that UPS's own clients.
+{% for u in power_ups %}
+{% set feeds = u.name in power_feeding_ups %}
+MONITOR {{ u.name }}@localhost {{ 1 if feeds else 0 }} upsmon-local {{ power_nut_password['upsmon-local'] | default('') }} {{ 'primary' if feeds else 'secondary' }}
+{% endfor %}
+MINSUPPLIES {{ 1 if power_feeding_ups else 0 }}
+SHUTDOWNCMD "/usr/local/sbin/power-shutdown"
+POWERDOWNFLAG /etc/killpower

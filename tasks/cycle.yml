@@ -1,0 +1,59 @@
+---
+# Ordered shutdown (NUT's SHUTDOWNCMD) and the wake at boot.
+# wakeonlan looks up "udp" in /etc/protocols (netbase): without it, minimal images fail to send
+- name: Install wakeonlan
+  ansible.builtin.apt:
+    name: [wakeonlan, netbase]
+    state: present
+
+- name: Directory for the power settings
+  ansible.builtin.file:
+    path: /etc/power
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+# Generated on the host, never leaves it; its public half goes to each target's authorized_keys.
+- name: Shutdown SSH key
+  community.crypto.openssh_keypair:
+    path: "{{ power_key }}"
+    type: ed25519
+    comment: power-shutdown@{{ inventory_hostname }}
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Settings and scripts
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - {src: shutdown.conf.j2, dest: /etc/power/shutdown.conf, mode: "0600"}
+    - {src: wake.conf.j2, dest: /etc/power/wake.conf, mode: "0600"}
+    - {src: power-wake.service.j2, dest: /etc/systemd/system/power-wake.service, mode: "0644"}
+  loop_control:
+    label: "{{ item.dest }}"
+  notify: Reload systemd
+
+- name: Install the scripts
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: /usr/local/sbin/{{ item }}
+    owner: root
+    group: root
+    mode: "0755"
+  loop: [power-shutdown, power-wake]
+
+- name: Flush handlers before enabling the wake unit
+  ansible.builtin.meta: flush_handlers
+
+# At boot only: it waits for the charge, so it never blocks the boot (Type=exec)
+- name: Wake unit enabled
+  ansible.builtin.systemd_service:
+    name: power-wake.service
+    enabled: true
+  when: not ansible_check_mode
