@@ -61,7 +61,8 @@ host 02:00:00:00:aa:02 rack@localhost 95 -
 host 02:00:00:00:bb:01 desk@198.51.100.4:3493 50 198.51.100.255
 CONF
 echo 90 > "$WORK/charge-rack"; echo 60 > "$WORK/charge-desk"; : > "$WORK/calls"
-if "$F/power-wake" "$WORK/wake.conf" > /dev/null 2>&1; then ko "a host below its own threshold exits 0"; else ok "a host below its own threshold fails after the timeout"; fi
+if "$F/power-wake" "$WORK/wake.conf" > /dev/null 2> "$WORK/err"; then ko "a host below its own threshold exits 0"; else ok "a host below its own threshold fails after the timeout"; fi
+if grep -qx '02:00:00:00:aa:02: rack@localhost below 95% after 1s, not woken' "$WORK/err"; then ok "the host not woken is reported on stderr"; else ko "stderr message ($(cat "$WORK/err"))"; fi
 if has 'wakeonlan 02:00:00:00:aa:01' && ! grep -q 'aa:02' "$WORK/calls"; then ok "each host follows its own threshold (70 woken, 95 not)"; else ko "per-host threshold"; fi
 if has 'wakeonlan -i 198.51.100.255 02:00:00:00:bb:01' && has 'upsc desk@198.51.100.4:3493 battery.charge'; then ok "each host follows its own UPS and broadcast"; else ko "per-host UPS or broadcast"; fi
 : > "$WORK/calls"

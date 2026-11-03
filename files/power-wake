@@ -18,8 +18,11 @@ done < <(grep -v '^#' "$conf")
 if (( ${#macs[@]} == 0 )); then echo "no host to wake${only:+ on $only}"; exit 0; fi
 
 # One run per UPS at a time: a UPS flapping on and off mains does not stack waiters
+# (the 2>/dev/null is on the braces: on exec itself it would silence the whole script's stderr)
 lock=${POWER_WAKE_LOCK_DIR:-/run/nut}/power-wake-${only:-all}.lock
-exec 9> "${lock//[^A-Za-z0-9._\/-]/_}" 2>/dev/null && { flock -n 9 || { echo "already waking ${only:-all}"; exit 0; }; }
+if { exec 9> "${lock//[^A-Za-z0-9._\/-]/_}"; } 2>/dev/null; then
+  flock -n 9 || { echo "already waking ${only:-all}"; exit 0; }
+fi
 
 end=$((SECONDS + timeout))
 woke=0
