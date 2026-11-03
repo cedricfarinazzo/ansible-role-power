@@ -37,7 +37,6 @@
     mode: "{{ power_tpl.mode }}"
   loop:
     - {src: shutdown.conf.j2, dest: /etc/power/shutdown.conf, mode: "0600"}
-    - {src: wake.conf.j2, dest: /etc/power/wake.conf, mode: "0600"}
     - {src: power-wake.service.j2, dest: /etc/systemd/system/power-wake.service, mode: "0644"}
   loop_control:
     loop_var: power_tpl

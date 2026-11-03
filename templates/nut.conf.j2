@@ -1,2 +1,6 @@
 # {{ ansible_managed }}
 MODE={{ power_mode }}
+{% if power_powerdown and power_poweroff_wait | string | length > 0 %}
+# Mains back during the shutdown: reboot after this instead of staying halted
+POWEROFF_WAIT={{ power_poweroff_wait }}
+{% endif %}

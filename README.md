@@ -40,7 +40,7 @@ The role will:
 - ✅ **netclient:** watch UPS on other hosts, reading the password on the server (`password_from`) or taking it from a variable
 - ✅ On the low battery of a feeding UPS, or after `power_shutdown_after_sec` on battery (`power_shutdown_on: timer`): stop each of `power_shutdown_targets` in order over SSH, wait until it is down, then stop this host
 - ✅ netserver: power the feeding UPS off after the shutdown (`power_killpower`), so it restarts the hosts when mains returns; a watched-only UPS gets `sdorder: "-1"`, so it is never powered off
-- ✅ At every boot: wait until the battery charge reaches `power_wake_min_charge`, then wake `power_wake_macs` by Wake-on-LAN, `power_wake_delay_sec` apart
+- ✅ Wake each host of `power_wake_hosts` by Wake-on-LAN once its own UPS is charged enough: at this host's boot, and each time that UPS is back on mains
 - ✅ Run your command on UPS events (`power_notify_cmd`), e.g. to post to a chat
 - ✅ Install `nut-check <ups>` for your monitoring: it fails on battery (OB), low battery (LB), battery to replace (RB) or no data
 
@@ -127,6 +127,8 @@ power_key: /etc/power/id_ed25519   # generated on the host; put its .pub in each
 power_poweroff_cmd: /sbin/shutdown -h +0
 # netserver: power the feeding UPS off after the shutdown (POWERDOWNFLAG); ignored on a netclient
 power_killpower: true
+# With killpower: reboot this long after commanding the UPS off, if the host is still up (POWEROFF_WAIT)
+power_poweroff_wait: ""            # e.g. 5m; empty = halt and wait for the UPS
 # Extra upsmon.conf settings
 power_upsmon_settings: {}          # e.g. {DEADTIME: 25, FINALDELAY: 0, HOSTSYNC: 30}
 ```
@@ -140,8 +142,10 @@ It makes the UPS cut its own outputs at the very end of the shutdown. Without it
 3. upsmon writes the flag `/etc/killpower`, then runs `power-shutdown`: the targets in order, then this host.
 4. systemd stops the services and remounts the disks read-only.
 5. At the very end, NUT's systemd hook (`nutshutdown`) finds the flag (`upsmon -K`) and runs `upsdrvctl shutdown`. Every UPS driver whose `sdorder` is not `-1` tells its UPS to switch off after `offdelay` (20 s by default for `usbhid-ups`) and back on `ondelay` after mains returns.
-6. The host halts; the UPS cuts its outputs after `offdelay`.
+6. The host halts; the UPS cuts its outputs after `offdelay`. With `power_poweroff_wait`, the hook first sleeps that long, then reboots the host.
 7. When mains returns, the UPS waits `ondelay`, then powers its outputs: the hosts boot. upsmon clears a leftover flag when it starts. `power-wake` wakes the hosts that need Wake-on-LAN once the battery is charged enough.
+
+**The power race:** mains can come back during steps 4 to 6. Some UPS models then ignore the off command, because they are on mains again: the host stays halted and nothing power-cycles it. `power_poweroff_wait` covers it. After the UPS command, the hook sleeps that long (longer than `offdelay`, e.g. `5m`), then reboots the host. If the UPS did cut, the host is already off and the sleep never ends. If it did not, the host comes back.
 
 Two guards:
 - Only a netserver with a feeding UPS writes the flag; a client never powers a UPS off.
@@ -161,14 +165,21 @@ power_notify_events: [ONLINE, ONBATT, LOWBATT, FSD, COMMOK, COMMBAD, SHUTDOWN, R
 ### Wake after power returns
 
 ```yaml
-power_wake_macs: []
-# A UPS of power_ups (or of power_remote_ups in netclient mode) whose battery.charge gates the wake
-power_wake_ups: ""
-power_wake_min_charge: 80            # 0 = wake at once, without reading the charge
-power_wake_timeout_sec: 3600       # then power-wake.service fails, visibly
+# Each host: {mac, ups, min_charge (power_wake_min_charge), broadcast (power_wake_broadcast)}
+# ups = a name of power_ups, or of power_remote_ups in netclient mode
+power_wake_hosts: []
+power_wake_min_charge: 80          # default threshold in %; 0 = wake at once, without reading the charge
+power_wake_timeout_sec: 3600       # then that run fails, visibly
 power_wake_delay_sec: 0            # between two hosts
-power_wake_broadcast: ""           # empty = 255.255.255.255
+power_wake_broadcast: ""           # default; empty = 255.255.255.255
 ```
+
+A host is woken once **its own** UPS reaches **its own** `min_charge`:
+
+- **At this host's boot** (`power-wake.service`), for every host: after a full power cut, when this host comes back first.
+- **When a UPS is back on mains** (upsmon's `ONLINE`), for that UPS's hosts only: after a cut of one UPS while this host stayed up on another.
+
+Hosts already up ignore the packet. A UPS that flaps on and off mains never starts two waits at once (one lock per UPS); the wait runs as the nut user, logs to `journalctl -t power-wake` and gives up after `power_wake_timeout_sec`.
 
 ## 🎯 Usage Examples
 
@@ -232,10 +243,10 @@ power_clients:
   - {name: db, role: secondary}
   - {name: web, role: secondary}
   - {name: nas, role: secondary}
-# Back after a cut: wake db and web once rack-a is charged enough
-power_wake_macs: ["02:00:5e:10:00:31", "02:00:5e:10:00:32"]
-power_wake_ups: rack-a
-power_wake_min_charge: 60
+# Back after a cut: wake each host on its own UPS; db, on two, follows rack-a
+power_wake_hosts:
+  - {mac: "02:00:5e:10:00:31", ups: rack-a, min_charge: 60}   # db
+  - {mac: "02:00:5e:10:00:32", ups: rack-b}                   # web, at the default 80 %
 power_wake_delay_sec: 30
 ```
 
@@ -273,7 +284,7 @@ What happens:
 |-------|-----------|
 | `rack-a` low battery | `pi` and `db`. `pi` powers `rack-a` off afterwards, so everything on it restarts when mains returns |
 | `rack-b` 5 minutes on battery | `web` (its timer) |
-| `rack-b` low battery | `db` and `web` |
+| `rack-b` low battery | `db` and `web`; back on mains, `pi` wakes `web` once `rack-b` is at 80 % (`db` waits for `rack-a`) |
 | `office` low battery | `nas` only. `pi` watches `office` as secondary and gives it `sdorder -1`, so its own shutdown never stops or powers off `nas` |
 
 - Every feed is required: `db` stops on the low battery of either of its UPS, never running on one supply alone (see Platform notes).
@@ -304,9 +315,9 @@ The backup box logs in as `backup` with the password in `/etc/nut/secrets/backup
 power_shutdown_targets:
   - {host: 198.51.100.21, port: 22, user: halt}
   - {host: 198.51.100.22, port: 22, user: halt}
-power_wake_macs: ["02:00:5e:10:00:21", "02:00:5e:10:00:22"]
-power_wake_ups: rack
-power_wake_min_charge: 90
+power_wake_hosts:
+  - {mac: "02:00:5e:10:00:21", ups: rack, min_charge: 90}
+  - {mac: "02:00:5e:10:00:22", ups: rack, min_charge: 90}
 power_wake_delay_sec: 60
 power_wake_broadcast: 198.51.100.255
 ```
@@ -332,14 +343,50 @@ power_killpower: false
 
 Back on mains before the timer runs out cancels the shutdown.
 
-### Post every UPS event to a webhook
+### Notifications with power_notify_cmd
+
+The command runs as the `nut` user, through `bash -c`, on each event of `power_notify_events`, with:
+
+| | Value | Example |
+|---|---|---|
+| `$NOTIFYTYPE` | the event | `ONBATT` |
+| `$UPSNAME` | the UPS, as upsmon names it | `rack@localhost`, `rack@198.51.100.4:3493` |
+| `$1` | upsmon's message | `UPS rack@localhost on battery` |
+
+It also runs on a netclient, for the UPS it follows. Use single quotes in YAML so the variables reach the shell.
+
+To the system journal:
+
+```yaml
+power_notify_cmd: 'logger -t ups "$NOTIFYTYPE $UPSNAME: $1"'
+```
+
+A push notification through [ntfy](https://ntfy.sh), high priority on battery and low battery:
 
 ```yaml
 power_notify_cmd: >-
-  curl -fsS -m 10 -H 'Content-Type: application/json'
-  -d "{\"content\": \"$UPSNAME: $1\"}" https://chat.example/hooks/ups
-power_notify_events: [ONBATT, ONLINE, LOWBATT, REPLBATT, COMMBAD]
+  curl -fsS -m 10 -H "Title: $UPSNAME"
+  -H "Priority: $([ "$NOTIFYTYPE" = ONBATT -o "$NOTIFYTYPE" = LOWBATT ] && echo high || echo default)"
+  -d "$1" https://ntfy.example/ups
+power_notify_events: [ONBATT, ONLINE, LOWBATT, REPLBATT, COMMBAD, COMMOK]
 ```
+
+A Discord or Slack-style webhook: build the JSON with `jq`, so a quote in the message can never break it. Keep the webhook URL out of the inventory: put it in a file only the nut user can read, and read it in the command.
+
+```yaml
+power_notify_cmd: >-
+  jq -cn --arg t "$NOTIFYTYPE" --arg m "$1" '{content: ($t + ": " + $m)}'
+  | curl -fsS -m 10 -H 'Content-Type: application/json' -d @- "$(cat /etc/nut/webhook-url)"
+power_notify_events: [ONBATT, ONLINE, LOWBATT, FSD, SHUTDOWN, REPLBATT, NOCOMM]
+```
+
+Your own script, which gets the same environment and argument:
+
+```yaml
+power_notify_cmd: /usr/local/bin/ups-event "$1"
+```
+
+The command runs while upsmon waits, so keep it short (`-m 10` above). It must also work without a network: on battery, the router may already be down.
 
 ### Use nut-check in your monitoring
 

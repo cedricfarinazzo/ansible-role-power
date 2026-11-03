@@ -1,10 +1,8 @@
 # {{ ansible_managed }}
-# ups <ups@host[:port]> | charge <min %> | timeout <seconds> | delay <seconds> | broadcast <address> | mac <address>
-ups {{ (power_monitors | selectattr('name', 'equalto', power_wake_ups) | map(attribute='target') | first) | default('') }}
-charge {{ power_wake_min_charge | int }}
+# timeout <seconds> | delay <seconds> | host <mac> <ups@host[:port]> <min charge %> <broadcast or ->
 timeout {{ power_wake_timeout_sec | int }}
 delay {{ power_wake_delay_sec | int }}
-broadcast {{ power_wake_broadcast }}
-{% for m in power_wake_macs %}
-mac {{ m }}
+{% for h in power_wake_hosts %}
+{% set b = h.broadcast | default(power_wake_broadcast) %}
+host {{ h.mac }} {{ power_monitors | selectattr('name', 'equalto', h.ups) | map(attribute='target') | first }} {{ h.min_charge | default(power_wake_min_charge) | int }} {{ b if b | length > 0 else '-' }}
 {% endfor %}

@@ -1,7 +1,7 @@
 ---
 # Generic defaults; host values live in the inventory.
 # The power cycle of a host on UPS: NUT watches the UPS, a low battery (or a time on battery) stops
-# power_shutdown_targets in order then this host, the next boot wakes power_wake_macs once the battery is charged.
+# power_shutdown_targets in order then this host, power_wake_hosts are woken once their UPS is charged again.
 
 # netserver: the UPS is attached here (drivers, upsd, upsmon); netclient: follow power_remote_ups on other hosts
 power_mode: netserver
@@ -40,6 +40,10 @@ power_shutdown_after_sec: 600
 # netserver: after the shutdown, power the feeding UPS off (POWERDOWNFLAG), so it powers back on, with this host,
 # when mains returns; a watched-only UPS gets sdorder -1. Ignored on a netclient
 power_killpower: true
+# netserver with killpower: after commanding the UPS off, NUT's shutdown hook sleeps this long and then reboots
+# the host, in case mains came back during the shutdown and the UPS kept its outputs on (POWEROFF_WAIT, a
+# /bin/sleep duration: 300, 5m); empty = halt and wait for the UPS
+power_poweroff_wait: ""
 # Command run on each UPS event of power_notify_events (as the nut user), with NOTIFYTYPE and UPSNAME in its
 # environment and the message as $1; empty = none
 power_notify_cmd: ""
@@ -55,11 +59,11 @@ power_key: /etc/power/id_ed25519
 # How this host stops last
 power_poweroff_cmd: /sbin/shutdown -h +0
 
-# Woken at boot by Wake-on-LAN once power_wake_ups reports battery.charge >= power_wake_min_charge
-power_wake_macs: []
-# A name of power_ups, or of power_remote_ups in netclient mode
-power_wake_ups: ""
-# 0 = wake at once, without reading the charge
+# Hosts woken by Wake-on-LAN, each {mac, ups, min_charge (power_wake_min_charge), broadcast (power_wake_broadcast)}:
+# ups = a name of power_ups (or of power_remote_ups in netclient mode). A host is woken once its UPS's
+# battery.charge reaches its min_charge: at this host's boot, and each time its UPS is back on mains
+power_wake_hosts: []
+# Default threshold, in %; 0 = wake at once, without reading the charge
 power_wake_min_charge: 80
 # Give up waking after this (the failed unit stays visible)
 power_wake_timeout_sec: 3600

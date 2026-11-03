@@ -50,33 +50,58 @@ printf 'wait 1\npoweroff poweroff now\n' > "$WORK/shutdown.conf"
 if [[ $(grep -c '^ssh ' "$WORK/calls" || true) == 0 ]] && has 'poweroff now'; then ok "no target: this host only"; else ko "empty target list"; fi
 
 # --- power-wake ---
-printf 'ups pdu@localhost\ncharge 70\ntimeout 1\ndelay 0\nbroadcast\nmac 02:00:00:00:aa:01\nmac 02:00:00:00:aa:02\n' > "$WORK/wake.conf"
-echo 90 > "$WORK/charge"; : > "$WORK/calls"
+# upsc stub: battery.charge of <ups> from $STUB_DIR/charge-<ups name>
+printf '#!/bin/sh\necho "upsc $*" >> "$STUB_DIR/calls"\ncase "$2" in ups.status) [ -s "$STUB_DIR/status" ] || exit 1; cat "$STUB_DIR/status" ;; *) cat "$STUB_DIR/charge-${1%%%%@*}" 2>/dev/null || exit 1 ;; esac\n' > "$WORK/bin/upsc"
+export POWER_WAKE_LOCK_DIR=$WORK
+cat > "$WORK/wake.conf" <<'CONF'
+timeout 1
+delay 0
+host 02:00:00:00:aa:01 rack@localhost 70 -
+host 02:00:00:00:aa:02 rack@localhost 95 -
+host 02:00:00:00:bb:01 desk@198.51.100.4:3493 50 198.51.100.255
+CONF
+echo 90 > "$WORK/charge-rack"; echo 60 > "$WORK/charge-desk"; : > "$WORK/calls"
+if "$F/power-wake" "$WORK/wake.conf" > /dev/null 2>&1; then ko "a host below its own threshold exits 0"; else ok "a host below its own threshold fails after the timeout"; fi
+if has 'wakeonlan 02:00:00:00:aa:01' && ! grep -q 'aa:02' "$WORK/calls"; then ok "each host follows its own threshold (70 woken, 95 not)"; else ko "per-host threshold"; fi
+if has 'wakeonlan -i 198.51.100.255 02:00:00:00:bb:01' && has 'upsc desk@198.51.100.4:3493 battery.charge'; then ok "each host follows its own UPS and broadcast"; else ko "per-host UPS or broadcast"; fi
+: > "$WORK/calls"
+"$F/power-wake" "$WORK/wake.conf" desk@198.51.100.4:3493 > /dev/null
+if has 'wakeonlan -i 198.51.100.255 02:00:00:00:bb:01' && ! grep -q 'aa:0' "$WORK/calls" && ! grep -q 'upsc rack' "$WORK/calls"; then ok "a UPS argument wakes that UPS's hosts only"; else ko "UPS filter"; fi
+: > "$WORK/calls"
+"$F/power-wake" "$WORK/wake.conf" other@localhost > /dev/null
+if [[ ! -s $WORK/calls ]]; then ok "a UPS with no host: nothing to do"; else ko "UPS with no host"; fi
+cat > "$WORK/wake.conf" <<'CONF'
+timeout 5
+delay 1
+host 02:00:00:00:aa:01 rack@localhost 70 -
+host 02:00:00:00:aa:02 rack@localhost 0 -
+CONF
+rm -f "$WORK/charge-rack"; : > "$WORK/calls"
+if "$F/power-wake" "$WORK/wake.conf" rack@localhost > /dev/null 2>&1; then ko "an unreadable charge woke a host"; else ok "an unreadable charge never counts as charged"; fi
+if has 'wakeonlan 02:00:00:00:aa:02' && ! grep -q 'aa:01' "$WORK/calls"; then ok "min_charge 0 wakes at once, without the charge"; else ko "min_charge 0"; fi
+echo 80 > "$WORK/charge-rack"; : > "$WORK/calls"; start=$SECONDS
 "$F/power-wake" "$WORK/wake.conf" > /dev/null
-if has 'upsc pdu@localhost battery.charge'; then ok "the charge is read from the configured target"; else ko "upsc target"; fi
-if has 'wakeonlan 02:00:00:00:aa:01' && has 'wakeonlan 02:00:00:00:aa:02'; then ok "charge above the threshold wakes every MAC"; else ko "wake above threshold"; fi
-echo 69.5 > "$WORK/charge"; : > "$WORK/calls"
-if "$F/power-wake" "$WORK/wake.conf" > /dev/null 2>&1; then ko "below the threshold exits 0"; else ok "below the threshold fails after the timeout"; fi
-if grep -q wakeonlan "$WORK/calls"; then ko "woke below the threshold"; else ok "nothing woken below the threshold"; fi
-printf 'ups pdu@backup.example:3493\ncharge 70\ntimeout 1\ndelay 1\nbroadcast 198.51.100.255\nmac 02:00:00:00:aa:01\nmac 02:00:00:00:aa:02\n' > "$WORK/wake.conf"
-echo 70 > "$WORK/charge"; : > "$WORK/calls"
-start=$SECONDS; "$F/power-wake" "$WORK/wake.conf" > /dev/null
-if has 'upsc pdu@backup.example:3493 battery.charge' && has 'wakeonlan -i 198.51.100.255 02:00:00:00:aa:01'; then ok "a remote UPS, at the threshold, to the broadcast address"; else ko "remote or broadcast"; fi
-if (( SECONDS - start >= 1 )); then ok "the delay separates two hosts"; else ko "no delay between hosts"; fi
-printf 'ups pdu@localhost\ncharge 70\n' > "$WORK/wake.conf"; : > "$WORK/calls"
-"$F/power-wake" "$WORK/wake.conf" > /dev/null
-if [[ ! -s $WORK/calls ]]; then ok "no MAC: nothing to do"; else ko "no MAC"; fi
+if has 'wakeonlan 02:00:00:00:aa:01' && has 'wakeonlan 02:00:00:00:aa:02' && (( SECONDS - start >= 1 )); then ok "the delay separates two hosts"; else ko "delay between hosts"; fi
+exec 8> "$WORK/power-wake-rack_localhost.lock"; flock 8
+out=$("$F/power-wake" "$WORK/wake.conf" rack@localhost)
+if [[ $out == "already waking rack@localhost" ]]; then ok "a second run for the same UPS steps aside"; else ko "lock ($out)"; fi
+exec 8>&-
 
 # --- power-notify ---
-printf 'timer 1\nevents ONBATT LOWBATT\ncmd echo "notified $NOTIFYTYPE $UPSNAME $1" >> "$STUB_DIR/calls"\n' > "$WORK/notify.conf"
-export POWER_NOTIFY_CONF=$WORK/notify.conf
+printf 'timer 1\nwake 1\nevents ONBATT LOWBATT\ncmd echo "notified $NOTIFYTYPE $UPSNAME $1" >> "$STUB_DIR/calls"\n' > "$WORK/notify.conf"
+printf '#!/bin/sh\necho "power-wake $*" >> "$STUB_DIR/calls"\n' > "$WORK/bin/power-wake-stub"; chmod +x "$WORK/bin/power-wake-stub"
+export POWER_NOTIFY_CONF=$WORK/notify.conf POWER_WAKE=$WORK/bin/power-wake-stub POWER_WAKE_CONF=$WORK/w.conf
 : > "$WORK/calls"; NOTIFYTYPE=ONBATT UPSNAME=pdu@localhost "$F/power-notify" "on battery"
 if has 'upssched on battery' && has 'notified ONBATT pdu@localhost on battery'; then ok "ONBATT reaches upssched and the command"; else ko "ONBATT dispatch"; fi
 : > "$WORK/calls"; NOTIFYTYPE=ONLINE UPSNAME=pdu@localhost "$F/power-notify" "on line"
+sleep 1
 if has 'upssched on line' && ! grep -q '^notified' "$WORK/calls"; then ok "ONLINE reaches upssched, not the command (not in events)"; else ko "ONLINE dispatch"; fi
+if has "power-wake $WORK/w.conf pdu@localhost"; then ok "ONLINE starts power-wake for that UPS"; else ko "wake on mains"; fi
 : > "$WORK/calls"; NOTIFYTYPE=COMMBAD UPSNAME=pdu@localhost "$F/power-notify" "lost"
 if [[ ! -s $WORK/calls ]]; then ok "an event outside both is ignored"; else ko "COMMBAD dispatch"; fi
-printf 'timer 0\nevents ONBATT\ncmd echo "notified $NOTIFYTYPE" >> "$STUB_DIR/calls"\n' > "$WORK/notify.conf"
+printf 'timer 0\nwake 0\nevents ONBATT\ncmd echo "notified $NOTIFYTYPE" >> "$STUB_DIR/calls"\n' > "$WORK/notify.conf"
+: > "$WORK/calls"; NOTIFYTYPE=ONLINE UPSNAME=pdu@localhost "$F/power-notify" "on line"; sleep 1
+if ! grep -q '^power-wake' "$WORK/calls"; then ok "wake 0: no power-wake on mains"; else ko "power-wake with wake 0"; fi
 : > "$WORK/calls"; NOTIFYTYPE=ONBATT UPSNAME=pdu@localhost "$F/power-notify" "on battery"
 if ! grep -q '^upssched' "$WORK/calls" && has 'notified ONBATT'; then ok "lowbatt mode: no upssched"; else ko "upssched outside timer mode"; fi
 

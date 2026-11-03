@@ -99,6 +99,17 @@
   notify: "{{ power_file.handler }}"
   no_log: true
 
+# Read by power-wake, at boot as root and on a UPS back on mains as the nut user (power-notify)
+- name: Hosts to wake
+  ansible.builtin.template:
+    src: wake.conf.j2
+    dest: /etc/nut/power-wake.conf
+    owner: root
+    group: nut
+    mode: "0640"
+  # Check mode on a first run: no nut group yet
+  ignore_errors: "{{ ansible_check_mode }}"
+
 # upssched (timer mode) runs as the nut user; upsmon -c fsd must signal the root upsmon process.
 - name: Let upssched force the shutdown
   ansible.builtin.copy:

@@ -117,17 +117,44 @@
           - not power_verify_sudoers.results[0].stat.exists
           - power_verify_sudoers.results[1].stat.exists
 
-    - name: Wake at the threshold sends a packet per host
-      ansible.builtin.command: /usr/local/sbin/power-wake /etc/power/wake.conf
+    - name: Wake for one UPS, its host only
+      ansible.builtin.command: /usr/local/sbin/power-wake /etc/nut/power-wake.conf main@localhost
       register: power_verify_wake
       changed_when: false
       failed_when: >-
-        power_verify_wake.rc != 0 or 'waking 02:00:00:00:00:01 02:00:00:00:00:02' not in power_verify_wake.stdout
+        power_verify_wake.rc != 0 or 'waking 02:00:00:00:00:01' not in power_verify_wake.stdout
+        or '02:00:00:00:00:02' in power_verify_wake.stdout
+
+    - name: Wake for every UPS, each host on its own threshold (other at 80 % < 90 %)
+      ansible.builtin.shell: |
+        set -o pipefail
+        sed 's/^timeout .*/timeout 1/' /etc/nut/power-wake.conf > /tmp/wake-all.conf
+        POWER_WAKE_POLL_SEC=0 /usr/local/sbin/power-wake /tmp/wake-all.conf
+      args:
+        executable: /bin/bash
+      register: power_verify_wake_all
+      changed_when: false
+      failed_when: >-
+        power_verify_wake_all.rc == 0 or 'waking 02:00:00:00:00:01' not in power_verify_wake_all.stdout
+        or '02:00:00:00:00:02: other@localhost below 90%' not in power_verify_wake_all.stderr
 
     - name: Read ups.conf
       ansible.builtin.slurp:
         src: /etc/nut/ups.conf
       register: power_verify_upsconf
+
+    - name: Read both nut.conf
+      ansible.builtin.slurp:
+        src: /etc/nut/nut.conf
+      register: power_verify_nutconf
+      delegate_to: "{{ item }}"
+      loop: ["{{ power_server }}", "{{ power_client }}"]
+
+    - name: The power race guard is on the server only (the client never powers a UPS off)
+      ansible.builtin.assert:
+        that:
+          - (power_verify_nutconf.results[0].content | b64decode) is search('(?m)^POWEROFF_WAIT=10m$')
+          - (power_verify_nutconf.results[1].content | b64decode) is not search('POWEROFF_WAIT')
 
     - name: The watched-only UPS is never powered off by this host
       ansible.builtin.assert:
@@ -221,6 +248,14 @@
         dest: /etc/nut/main.dev
         mode: "0644"
 
+    - name: Back on mains, the server wakes main's host by itself
+      ansible.builtin.shell: journalctl -t power-wake --no-pager -q
+      register: power_verify_online_wake
+      changed_when: false
+      until: "'waking 02:00:00:00:00:01' in power_verify_online_wake.stdout"
+      retries: 15
+      delay: 2
+
     - name: Restart the client's upsmon (it exits after a shutdown)
       ansible.builtin.shell: rm -f /tmp/powered-off && systemctl restart nut-monitor.service
       delegate_to: "{{ power_client }}"
@@ -298,17 +333,6 @@
       until: power_verify_lb.stat.exists
       retries: 30
       delay: 2
-
-    - name: Below the threshold the wake waits and gives up
-      ansible.builtin.shell: |
-        set -o pipefail
-        sed 's/^timeout .*/timeout 1/' /etc/power/wake.conf > /tmp/wake-low.conf
-        POWER_WAKE_POLL_SEC=0 /usr/local/sbin/power-wake /tmp/wake-low.conf
-      args:
-        executable: /bin/bash
-      register: power_verify_low
-      changed_when: false
-      failed_when: power_verify_low.rc == 0 or 'not waking' not in power_verify_low.stderr
 
     - name: The watched-only UPS fails nut-check on battery
       ansible.builtin.copy:

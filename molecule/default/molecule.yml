@@ -62,10 +62,13 @@ provisioner:
         # $$: molecule.yml itself expands environment variables
         power_notify_cmd: echo "$$NOTIFYTYPE $$UPSNAME" >> /tmp/power-notify.log
         power_notify_events: [ONBATT, ONLINE, LOWBATT, FSD]
-        power_wake_macs: ["02:00:00:00:00:01", "02:00:00:00:00:02"]
-        power_wake_ups: main
+        # One host per UPS, each with its own threshold
+        power_wake_hosts:
+          - {mac: "02:00:00:00:00:01", ups: main}
+          - {mac: "02:00:00:00:00:02", ups: other, min_charge: 90}
         power_wake_min_charge: 50
         power_wake_delay_sec: 1
+        power_poweroff_wait: 10m
       client-${MOLECULE_DISTRO:-debian13}:
         power_mode: netclient
         power_remote_ups:
