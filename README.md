@@ -131,6 +131,24 @@ power_killpower: true
 power_upsmon_settings: {}          # e.g. {DEADTIME: 25, FINALDELAY: 0, HOSTSYNC: 30}
 ```
 
+#### What `power_killpower` does
+
+It makes the UPS cut its own outputs at the very end of the shutdown. Without it, the hosts already stopped stay off when mains returns, because their power never went away. With it, the UPS powers them back on, and hosts set to boot on power (a Raspberry Pi, a BIOS "power on after AC loss") start by themselves.
+
+1. A feeding UPS turns critical: low battery, the timer, or no data while on battery.
+2. upsmon (primary) sets FSD on that UPS: its NUT clients start to stop. upsmon waits up to `HOSTSYNC` for them to log out.
+3. upsmon writes the flag `/etc/killpower`, then runs `power-shutdown`: the targets in order, then this host.
+4. systemd stops the services and remounts the disks read-only.
+5. At the very end, NUT's systemd hook (`nutshutdown`) finds the flag (`upsmon -K`) and runs `upsdrvctl shutdown`. Every UPS driver whose `sdorder` is not `-1` tells its UPS to switch off after `offdelay` (20 s by default for `usbhid-ups`) and back on `ondelay` after mains returns.
+6. The host halts; the UPS cuts its outputs after `offdelay`.
+7. When mains returns, the UPS waits `ondelay`, then powers its outputs: the hosts boot. upsmon clears a leftover flag when it starts. `power-wake` wakes the hosts that need Wake-on-LAN once the battery is charged enough.
+
+Two guards:
+- Only a netserver with a feeding UPS writes the flag; a client never powers a UPS off.
+- A watched-only UPS gets `sdorder: "-1"` and keeps its outputs on.
+
+Set it to `false` when the UPS feeds machines this host does not stop, when you prefer to restart by hand, or when your UPS model mishandles the command: some stay off until a button press. Test it once.
+
 ### Notifications
 
 ```yaml
