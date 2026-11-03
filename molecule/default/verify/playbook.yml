@@ -283,9 +283,15 @@
         {{ power_verify_cursor_server.stdout | regex_replace('^-- cursor: ', '') | quote }}
       register: power_verify_online_wake
       changed_when: false
-      until: "'waking 02:00:00:00:00:01' in power_verify_online_wake.stdout"
+      # The MAC, from either line of the run: systemd 252 (Debian 12) may file the script's own echo under
+      # another identifier than wakeonlan's output
+      until: "'02:00:00:00:00:01' in power_verify_online_wake.stdout"
       retries: 15
       delay: 2
+
+    - name: Only main's host was woken (other's host waits for 90 %)
+      ansible.builtin.assert:
+        that: "'02:00:00:00:00:02' not in power_verify_online_wake.stdout"
 
     - name: Restart the client's upsmon (it exits after a shutdown)
       ansible.builtin.shell: rm -f /tmp/powered-off && systemctl restart nut-monitor.service
