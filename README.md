@@ -154,6 +154,37 @@ power_wake_broadcast: ""           # empty = 255.255.255.255
 
 ## 🎯 Usage Examples
 
+### Central SSH, client mode, or both
+
+Two ways to stop the other machines on a UPS; they combine.
+
+| | Central SSH (`power_shutdown_targets`) | Client mode (`power_mode: netclient`) |
+|---|---|---|
+| Who decides | The UPS server | Each host, from what it sees of its UPS |
+| Order | Strict: one target at a time, each waited for | None: each client stops when its UPS is critical |
+| On the target | SSH with the server's key, restricted to a poweroff command | This role in `netclient` mode |
+| Server dead or unreachable during a cut | Nobody stops the targets | Each client stops itself (`DEADTIME` after it loses the data while on battery) |
+| Per-host choice | One trigger, on the server | Each client picks `lowbatt` or `timer`, and which UPS feed it |
+| Good for | Appliances and switches without NUT; a strict order (VMs, then cluster, then storage) | Ordinary Linux hosts |
+
+**Both** is the safest: the clients protect themselves, and the server enforces the order when it is up.
+
+```yaml
+# The server
+power_clients:
+  - {name: hv1, role: secondary}
+  - {name: hv2, role: secondary}
+power_shutdown_targets:
+  - {host: 198.51.100.21, user: halt}
+  - {host: 198.51.100.22, user: halt}
+```
+
+Each host then stops at whichever comes first, the server's SSH command or its own NUT client; both are a poweroff, so the second is harmless.
+
+Mind the order of events. The server, as primary, sets FSD as soon as its shutdown starts. It then waits up to its `HOSTSYNC` for the clients to log out, and only then runs the SSH sequence. So by default the NUT clients stop together, before the sequence. If the order matters, either:
+- give those clients a `FINALDELAY` (their wait between FSD and their own poweroff, set in `power_upsmon_settings`) longer than the server's `HOSTSYNC` plus the time the sequence needs;
+- or make the hosts that must stop in order SSH targets only.
+
 ### Several UPS, several hosts
 
 Three UPS on one small server, `pi`, and three hosts that each follow the UPS they are plugged into:
