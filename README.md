@@ -346,6 +346,25 @@ power_killpower: false
 
 Back on mains before the timer runs out cancels the shutdown.
 
+### Stop earlier than the UPS's own low battery
+
+Many UPS raise low battery late, at 10 or 20 % charge: a few minutes, too short for several NUT clients to stop. Let the driver raise it at your own threshold:
+
+```yaml
+power_ups:
+  - name: rack
+    driver: usbhid-ups
+    options:
+      vendorid: "051d"
+      productid: "0002"
+      override.battery.charge.low: "40"   # low battery at 40 %
+      ignorelb: true                       # required: ignore the UPS's own LB, compare the charge yourself
+power_feeding_ups: [rack]
+power_wake_min_charge: 70                  # well above 40, so a second cut does not catch the hosts booting
+```
+
+`override.battery.charge.low` alone only changes the value `upsc` shows: the UPS still raises LB at its own threshold. With `ignorelb`, the driver raises LB when `battery.charge` falls to the overridden value (NUT `ups.conf(5)`). Check after the apply: `upsc rack@localhost battery.charge.low` reads `40` and `driver.flag.ignorelb` is set. Pick the threshold from a measure: cut mains for a few minutes with the usual load and read the drain per minute from `battery.charge`.
+
 ### Notifications with power_notify_cmd
 
 The command runs as the `nut` user, through `bash -c`, on each event of `power_notify_events`, with:
