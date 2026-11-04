@@ -4,6 +4,20 @@
   ansible.builtin.apt:
     name: "{{ ['nut-server', 'nut-client'] if power_mode == 'netserver' else ['nut-client'] }}"
     state: present
+  register: power_nut_install
+
+# NUT's udev rules (group nut on known UPS) apply on plug-in only: a UPS plugged in before the package keeps
+# root:root and every driver fails with "insufficient permissions". A change event reapplies them; USB devices only,
+# so no network interface (a USB NIC included) is touched.
+- name: Apply NUT's udev rules to the UPS already plugged in
+  ansible.builtin.shell: >-
+    udevadm trigger --action=change --subsystem-match=usb --property-match=DEVTYPE=usb_device
+    && udevadm settle
+  when:
+    - power_mode == 'netserver'
+    - power_nut_install is changed
+    - not ansible_check_mode
+  changed_when: true
 
 - name: Directory for the NUT passwords
   ansible.builtin.file:
