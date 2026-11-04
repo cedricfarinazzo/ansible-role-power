@@ -4,6 +4,7 @@
   ansible.builtin.apt:
     name: "{{ ['nut-server', 'nut-client'] if power_mode == 'netserver' else ['nut-client'] }}"
     state: present
+  register: power_nut_install
 
 - name: Directory for the NUT passwords
   ansible.builtin.file:
@@ -210,3 +211,28 @@
   loop_control:
     loop_var: power_service
   when: not ansible_check_mode
+
+# NUT's udev rules (group nut on known UPS) apply on plug-in only: a UPS plugged in before the package keeps
+# root:root and its driver fails with "insufficient permissions". On the install run, or whenever a driver is
+# not running, a change event reapplies them (USB devices only: no network interface, a USB NIC included is
+# touched), then the drivers restart. A rerun of the play therefore repairs a host left in that state.
+- name: Read the driver states
+  ansible.builtin.service_facts:
+  when: power_mode == 'netserver' and not ansible_check_mode
+
+- name: Apply NUT's udev rules to the UPS already plugged in
+  ansible.builtin.shell: >-
+    udevadm trigger --action=change --subsystem-match=usb --property-match=DEVTYPE=usb_device
+    && udevadm settle
+  when:
+    - power_mode == 'netserver'
+    - not ansible_check_mode
+    - power_nut_install is changed or power_drivers_down | length > 0
+  vars:
+    power_drivers_down: >-
+      {{ power_ups | map(attribute='name')
+      | map('regex_replace', '^', 'nut-driver@') | map('regex_replace', '$', '.service')
+      | reject('in', ansible_facts.services | dict2items | selectattr('value.state', 'equalto', 'running')
+      | map(attribute='key') | list) | list }}
+  changed_when: true
+  notify: Restart driver target
