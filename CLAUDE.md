@@ -38,6 +38,7 @@ Public Ansible role `cedricfarinazzo.power` (Ansible Galaxy): the power cycle of
 - **Scripts never stop the sequence on one failure:** `power-shutdown` logs a target's failure and goes on, then stops this host.
 - **GitHub Actions pinned by full commit SHA**, tag in a trailing comment. Resolve with `gh api repos/<owner>/<repo>/git/refs/tags/<tag> --jq .object.sha`.
 - **Exact pins for tooling** (`requirements-dev.txt`, `package.json`, `molecule/default/collections.yml`); ranges only in `requirements.yml`.
+- **A pinned upstream version in `defaults/`, `vars/` or `molecule/`** (an OpenBao, plugin or tool release the role installs or tests) carries a `# renovate: datasource=<datasource> depName=<name> [extractVersion=<regex>]` line right above it, or Renovate never sees it. Its bump is `fix(deps)` in `defaults/`/`vars/` (a patch release), `chore(deps)` in `molecule/` (no release, not automerged). A checksum pinned next to a version is updated by hand. `renovate.json` is identical in the ssh, power and openbao roles: change all three together.
 - **License:** MIT.
 
 ## Supported platforms
