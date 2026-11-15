@@ -26,6 +26,5 @@ galaxy_info:
     - shutdown
     - wakeonlan
     - system
-    - homelab
 
 dependencies: []
