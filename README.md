@@ -9,6 +9,19 @@ One role for both sides: the host the UPS is plugged into (`netserver`) and the 
 
 ## 🚀 Quick Start
 
+Install from Ansible Galaxy ([cedricfarinazzo.power](https://galaxy.ansible.com/cedricfarinazzo/power)), pinned to a release:
+
+```yaml
+# requirements.yml
+roles:
+  - name: cedricfarinazzo.power
+    version: 1.0.1
+```
+
+```bash
+ansible-galaxy role install -r requirements.yml
+```
+
 ```yaml
 # The host the UPS is plugged into (inventory host ups-server)
 - hosts: ups-server
@@ -445,3 +458,7 @@ Once CI passes on `main`, [semantic-release](https://github.com/semantic-release
 ## 👥 Authors & Contributors
 
 **Cédric Farinazzo** ([@cedricfarinazzo](https://github.com/cedricfarinazzo)) - *Author and Maintainer*
+
+## 📄 License
+
+MIT, see [LICENSE](LICENSE).
